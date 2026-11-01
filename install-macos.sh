@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 if [[ "$(uname -s)" != Darwin ]]; then echo 'This installer requires macOS 14 or later.' >&2; exit 1; fi
+if [[ "$(sw_vers -productVersion | cut -d. -f1)" -lt 14 ]]; then echo 'macOS 14 or later is required.' >&2; exit 1; fi
 repo_root="$(cd "$(dirname "$0")" && pwd -P)"
 package=''
 checksum=''

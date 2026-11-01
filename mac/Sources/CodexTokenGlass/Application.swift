@@ -53,12 +53,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let host = NSHostingView(rootView: DetailView(model: model))
             host.frame = NSRect(x: 0, y: 0, width: 410, height: 570)
             host.layoutSubtreeIfNeeded()
-            model.settingsVisible = true; host.layoutSubtreeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                print("PASS: macOS native views initialized with synthetic data")
-                NSApplication.shared.terminate(nil)
+            if let directory = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] {
+                let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                window.title = "Synthetic preview"; window.contentView = host
+                window.center(); window.orderFrontRegardless()
+                exportPreview(index: 0, host: host, window: window, directory: URL(fileURLWithPath: directory))
+            } else {
+                model.settingsVisible = true; host.layoutSubtreeIfNeeded()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    print("PASS: macOS native views initialized with synthetic data")
+                    NSApplication.shared.terminate(nil)
+                }
             }
         } else if CommandLine.arguments.contains("--demo") { showPopover() }
+    }
+
+    private func exportPreview(index: Int, host: NSView, window: NSWindow, directory: URL) {
+        let variants = [("light-details-zh", false, "light", "zh"), ("light-settings-zh", true, "light", "zh"),
+                        ("dark-details-en", false, "dark", "en"), ("dark-settings-en", true, "dark", "en")]
+        guard index < variants.count else {
+            print("PASS: native light/dark details and settings rendered with synthetic data")
+            window.orderOut(nil); NSApplication.shared.terminate(nil); return
+        }
+        let variant = variants[index]
+        model.settingsVisible = variant.1; model.theme = variant.2; model.language = variant.3
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("Preview bitmap unavailable") }
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("Preview encoding failed") }
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try png.write(to: directory.appendingPathComponent(variant.0 + ".png"))
+            } catch { fatalError("Preview export failed") }
+            exportPreview(index: index + 1, host: host, window: window, directory: directory)
+        }
     }
 
     @objc private func togglePopover() { popover.isShown ? popover.performClose(nil) : showPopover() }

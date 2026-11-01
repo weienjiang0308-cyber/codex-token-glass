@@ -27,6 +27,11 @@ jobs:
         run: bash mac/build.sh
       - uses: actions/upload-artifact@v4
         with:
+          name: Mac-native-previews-${{ matrix.rid }}
+          path: mac-dist/${{ matrix.rid }}/preview/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
           name: CodexTokenGlass-${{ matrix.rid }}-preview
           path: mac-dist/${{ matrix.rid }}/
           if-no-files-found: error
