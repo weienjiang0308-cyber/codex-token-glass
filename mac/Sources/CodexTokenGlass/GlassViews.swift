@@ -171,8 +171,18 @@ struct DetailView: View {
             }
             Divider().opacity(0.6)
             VStack(alignment: .leading, spacing: 14) {
-                Toggle(model.tr("在 Codex 窗口旁显示浮条", "Show strip beside the Codex window"), isOn: $model.floating)
-                Toggle(model.tr("登录时启动", "Launch at login"), isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
+                HStack {
+                    Text(model.tr("在 Codex 窗口旁显示浮条", "Show strip beside the Codex window"))
+                    Spacer()
+                    Toggle("", isOn: $model.floating).labelsHidden()
+                        .accessibilityLabel(model.tr("在 Codex 窗口旁显示浮条", "Show strip beside the Codex window"))
+                }
+                HStack {
+                    Text(model.tr("登录时启动", "Launch at login"))
+                    Spacer()
+                    Toggle("", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) })).labelsHidden()
+                        .accessibilityLabel(model.tr("登录时启动", "Launch at login"))
+                }
                 Text(model.tr("浮条跟随 Codex 窗口外框，第一版不定位输入框工具栏。", "The strip follows the Codex window frame. Composer toolbar docking is not included yet."))
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.font(.system(size: 12)).toggleStyle(.switch).controlSize(.small)
