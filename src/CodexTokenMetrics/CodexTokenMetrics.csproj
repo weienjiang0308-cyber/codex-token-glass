@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CodexTokenMetrics</AssemblyName>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+  <!-- Compile the actual Windows parser, with no fork of its numeric rules. -->
+  <ItemGroup>
+    <Compile Include="../CodexStatusbar/TpsTracker.cs" Link="Shared/TpsTracker.cs" />
+    <Compile Include="../CodexStatusbar/RolloutReader.cs" Link="Shared/RolloutReader.cs" />
+    <Compile Include="../CodexStatusbar/StateDatabase.cs" Link="Shared/StateDatabase.cs" />
+    <Compile Include="../CodexStatusbar/CodexThemeSource.cs" Link="Shared/CodexThemeSource.cs" />
+  </ItemGroup>
+</Project>

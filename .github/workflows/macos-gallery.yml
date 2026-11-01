@@ -1,0 +1,27 @@
+name: macOS screenshot gallery
+on:
+  push:
+    branches: ['feat/macos-*']
+    paths: ['mac/**', '.github/workflows/macos-gallery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-gallery-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gallery:
+    runs-on: macos-26
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Render synthetic native screenshots
+        run: bash mac/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mac-HD-gallery
+          path: mac-dist/osx-arm64/preview/
+          if-no-files-found: error

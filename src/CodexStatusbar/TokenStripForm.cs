@@ -1487,7 +1487,10 @@ internal sealed class TokenStripForm : Form
             using var bridge=new Bitmap(size,size,raster.RowBytes,PixelFormat.Format32bppPArgb,raster.GetPixels());
             _settingsIcon=new Bitmap(bridge);
         }
-        graphics.DrawImageUnscaled(_settingsIcon,bounds.Left+(bounds.Width-size)/2,bounds.Top+(bounds.Height-size)/2);
+        // The icon was rasterized in device pixels already. DrawImageUnscaled
+        // interprets its default 96-DPI metadata again on a high-DPI target.
+        graphics.DrawImage(_settingsIcon, new Rectangle(bounds.Left+(bounds.Width-size)/2,
+            bounds.Top+(bounds.Height-size)/2, size, size), 0, 0, size, size, GraphicsUnit.Pixel);
     }
 
     private void DrawCompactMetric(

@@ -2,6 +2,8 @@
 
 给 Windows 版 Codex 加一条贴附状态栏：token 用量、缓存命中率、模型输出吞吐，以及可交互的 Liquid Glass 详情和设置面板。
 
+**Mac 移植正在提供独立预览版本**：原生菜单栏、详情与设置、可选窗口浮条，以及桌面唯一本地会话的自动跟随；共用原有计数和测速代码。多会话时需固定目标，不保证窗口焦点识别。安装范围、构建和限制见 [macOS 预览说明](docs/MACOS.md)。下面的正式安装提示词仍只适用于 Windows。
+
 **这是独立的 Windows 桌面伴随程序。** 它贴附在官方 Codex 窗口上，不是 `codex plugin add` 安装的 MCP 插件，也不修改、注入或替换 Codex。
 
 基于 [dongyue-19/codex-statusbar](https://github.com/dongyue-19/codex-statusbar) 修改，保留上游 MIT 许可及署名。图形材质使用 [LiquidGlass](https://github.com/shayann07/liquidglass)，不是 Apple 官方组件或原生 iOS API。

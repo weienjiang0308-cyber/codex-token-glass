@@ -52,3 +52,9 @@ docs/app-server-schema/
 
 # ---------------------------------------- reference clones fetched in research
 ../_repos/
+
+# Native macOS build products
+mac/.build/
+mac/.swiftpm/
+mac-dist/
+.DS_Store

@@ -22,6 +22,14 @@ internal static class ProbeRunner
     {
         LastExitCode = 0;
 
+        if (args.Count >= 2 && args[0] == "--public-gallery")
+        {
+            Application.SetHighDpiMode(HighDpiMode.DpiUnaware);
+            Application.EnableVisualStyles();
+            LastExitCode = PublicGallery.Render(args[1]);
+            return true;
+        }
+
         if(args.Count>=2 && args[0]=="--demo-output")
         {LastExitCode=PublicDemo.Render(args[1]);return true;}
 
