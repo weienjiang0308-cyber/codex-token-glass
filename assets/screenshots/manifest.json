@@ -1,0 +1,621 @@
+{
+  "pixelDensity": "4x",
+  "format": "PNG",
+  "count": 39,
+  "windowsSourceCommit": "fda0fefa93e2ec2093a99c9a9726df5dcce4bfce",
+  "macSourceCommit": "6e8ec1f0c87fc60978d6b72a431d13631ee63c68",
+  "privacy": "Synthetic usage, config, titles, backgrounds and Mac home path. No user desktop, credentials or session logs.",
+  "menuNote": "Native WinForms menu-item catalog, expanded vertically to include all entries; not a live popup capture.",
+  "images": [
+    {
+      "file": "windows/windows-details-dark-en.png",
+      "width": 1776,
+      "height": 2560,
+      "sha256": "68fb638db3ad41520a5c4931ba1202fe423d0f0d6193851db96e73c614d4de9b",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-details-dark-zh.png",
+      "width": 1776,
+      "height": 2560,
+      "sha256": "d8d3aebb3ed021c27cf934d0123d4431cfbfa5462bab3f8d90719de4dcc7ec2c",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-details-light-en.png",
+      "width": 1776,
+      "height": 2560,
+      "sha256": "cae20763f4cff9e6a72b56221ba8496852e7c67df598f28e4f28059ee8f034ca",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-details-light-zh.png",
+      "width": 1776,
+      "height": 2560,
+      "sha256": "1ac8d8e97a72d540be079846aa04f7f65d466f74a3d018924fde9e1a8487a387",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-anchor.png",
+      "width": 408,
+      "height": 1016,
+      "sha256": "e2b25b760547f49bb5e8077046a871d7a087b4b0d619678812178c87856c669b",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-position-mode.png",
+      "width": 1241,
+      "height": 344,
+      "sha256": "02c2992b232157b89959bf6318902e2ad3774b15bdf4503ed8c9d37e6e1bde88",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-primary-metric.png",
+      "width": 663,
+      "height": 1800,
+      "sha256": "84a97df5187d2cd5caa11462d7ce602a4d899c4e169f604f461558571fa8d0ff",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-root.png",
+      "width": 1392,
+      "height": 2664,
+      "sha256": "55624976bba16dbf6985ab04fffc6433e4df5b05f61a0c256614040c1e7f3e5c",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-secondary-metric.png",
+      "width": 663,
+      "height": 1800,
+      "sha256": "84a97df5187d2cd5caa11462d7ce602a4d899c4e169f604f461558571fa8d0ff",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-status.png",
+      "width": 663,
+      "height": 232,
+      "sha256": "e9b5fb4a02eb37cae26cb8d18e6cb0c8a71e77928f5acb8b19e91724508e63b0",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-theme.png",
+      "width": 603,
+      "height": 344,
+      "sha256": "8852d4634c9d9ce64c2117d491224b25b3a27a3872589ec9cbf145a8940ca9b6",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-traditional-position.png",
+      "width": 459,
+      "height": 456,
+      "sha256": "6edd287dfc86a87d6331e3b79659a8a0ca5971744a588acad8eb97d2402e1a13",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-menu-visible-fields.png",
+      "width": 663,
+      "height": 1800,
+      "sha256": "84a97df5187d2cd5caa11462d7ce602a4d899c4e169f604f461558571fa8d0ff",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-position-edit-dark-zh.png",
+      "width": 1840,
+      "height": 336,
+      "sha256": "d432967d110c8e1b331cd6fcbf4cb2092d504324646cf5e4b519856462fca2f5",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-position-edit-light-zh.png",
+      "width": 1840,
+      "height": 336,
+      "sha256": "87302f3c7ac6d3ae44b7b0a2d1c8eb34adb2d643249791548164afd711d3c934",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-settings-dark-en.png",
+      "width": 2208,
+      "height": 2920,
+      "sha256": "ae01fecc73737f91dc5cb519a37625ad90d8f63d6fc5d68dd68dd9b4598d2ba1",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-settings-dark-zh.png",
+      "width": 2208,
+      "height": 2920,
+      "sha256": "804d8b6071a30f260fc1a714332fc49e596c4ccb698a62d2ed5fe23091a9261f",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-settings-light-en.png",
+      "width": 2208,
+      "height": 2920,
+      "sha256": "523c29c8f4ac45bd9f266093f21a37c2992998a5284d253cfa526df84da90989",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-settings-light-zh.png",
+      "width": 2208,
+      "height": 2920,
+      "sha256": "f7d45ad9691bbbef9ea85056f4437c2c56ae9d43722c018a766ba5c3cf440992",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-strip-dark-en.png",
+      "width": 1840,
+      "height": 336,
+      "sha256": "61f40680c018238c68dc08aae0cd79214cefcdbeabb3320caed8aa7eb5bc07e1",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-strip-dark-zh.png",
+      "width": 1840,
+      "height": 336,
+      "sha256": "61f40680c018238c68dc08aae0cd79214cefcdbeabb3320caed8aa7eb5bc07e1",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-strip-light-en.png",
+      "width": 1840,
+      "height": 336,
+      "sha256": "490b598664b35a6fd95d15fbcd988289d65de4c93052255742a5e0d1343a486e",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-strip-light-zh.png",
+      "width": 1840,
+      "height": 336,
+      "sha256": "490b598664b35a6fd95d15fbcd988289d65de4c93052255742a5e0d1343a486e",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-waiting-dark-zh.png",
+      "width": 1776,
+      "height": 2560,
+      "sha256": "9cf1584b5a71a1ff3b59c8d35333dd8cb319bad348fab3751c323e83619f14fe",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "windows/windows-waiting-light-zh.png",
+      "width": 1776,
+      "height": 2560,
+      "sha256": "65e45e2c671a20344bea746352e0f4475b6d295a833416d807046ff9db938d62",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "gAMA",
+        "pHYs",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-details-dark-en.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "4a8f4a0ee4b14f3bef82d7338b13555b018d577c6517dcf4a8cd103e9675c8d1",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-details-dark-zh.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "d243466250949a4a65695d4e71ba2b6d465ee81ffdf3ed748423640c5457f2d8",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-details-light-en.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "8927a1f4b63bff6d98da644c4bef1e7fdad4889a205e43f7c7fbe635d2075eb0",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-details-light-zh.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "e182454f0da18d93d1a877fd82def310865206aa5daeaa44f228ad0837f63282",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-settings-dark-en.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "b4166c72b7a44f0ba8ede6bb61686627a3dd96c142655c8dd60263ed39a060a6",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-settings-dark-zh.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "af32ee23db4fc0c0f49640687a0459f30aae21deebc031629382f200d3210980",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-settings-light-en.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "8f3ec02a2ef6f4d98d90103ab9b1d40ee1930195258362ca8661441ae97e5774",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-settings-light-zh.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "5978abfad9dd5c5061933c7e2ce641d4fc2038d3a8e7db1cfc8d059bc18a870e",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-strip-dark-en.png",
+      "width": 1240,
+      "height": 176,
+      "sha256": "6e281abf1cf4b188f6c1c799a83a6dcd7e99b7a2f7cef1622d5de1b2307a1940",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-strip-dark-zh.png",
+      "width": 1240,
+      "height": 176,
+      "sha256": "6e281abf1cf4b188f6c1c799a83a6dcd7e99b7a2f7cef1622d5de1b2307a1940",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-strip-light-en.png",
+      "width": 1240,
+      "height": 176,
+      "sha256": "09c68ec71dfa3b15b3bdca32809a64f19051d4cbc38debbcb61c02855a11c863",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-strip-light-zh.png",
+      "width": 1240,
+      "height": 176,
+      "sha256": "09c68ec71dfa3b15b3bdca32809a64f19051d4cbc38debbcb61c02855a11c863",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-waiting-dark-zh.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "92848de37dea85f69f8108b3382024580649f83e3174a9f5de28099e3b419dc8",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    },
+    {
+      "file": "macos/macos-waiting-light-zh.png",
+      "width": 1640,
+      "height": 3040,
+      "sha256": "ca457f89bbf566ac32ea09e60138d7225d6e1ae8766e0f440e7ac25af62e114c",
+      "pngChunks": [
+        "IDAT",
+        "IEND",
+        "IHDR",
+        "eXIf",
+        "sRGB"
+      ],
+      "syntheticData": true,
+      "desktopCapture": false
+    }
+  ]
+}
