@@ -51,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--smoke-test") {
             // Layout both screens with synthetic data; never inspect runner accounts.
             let host = NSHostingView(rootView: DetailView(model: model))
-            host.frame = NSRect(x: 0, y: 0, width: 410, height: 640)
+            host.frame = NSRect(x: 0, y: 0, width: 410, height: ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] == nil ? 640 : 760)
             host.layoutSubtreeIfNeeded()
             if let directory = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] {
                 let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -69,18 +69,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func exportPreview(index: Int, host: NSView, window: NSWindow, directory: URL) {
-        let variants = [("light-details-zh", false, "light", "zh"), ("light-settings-zh", true, "light", "zh"),
-                        ("dark-details-en", false, "dark", "en"), ("dark-settings-en", true, "dark", "en")]
+        let variants = ["zh", "en"].flatMap { language in
+            ["light", "dark"].flatMap { theme in
+                (["details", "settings", "strip"] + (language == "zh" ? ["waiting"] : [])).map { kind in
+                    ("macos-\(kind)-\(theme)-\(language)", kind, theme, language)
+                }
+            }
+        }
         guard index < variants.count else {
-            print("PASS: native light/dark details and settings rendered with synthetic data")
+            print("PASS: 14 native views rendered at 4x density with synthetic data and a synthetic home path")
             window.orderOut(nil); NSApplication.shared.terminate(nil); return
         }
         let variant = variants[index]
-        model.settingsVisible = variant.1; model.theme = variant.2; model.language = variant.3
+        model.settingsVisible = variant.1 == "settings"; model.theme = variant.2; model.language = variant.3
+        model.snapshot = variant.1 == "waiting" ? MetricsSnapshot() : .demo
+        let view: NSView
+        if variant.1 == "strip" {
+            let strip = NSHostingView(rootView: FloatingStrip(model: model))
+            strip.frame = NSRect(x: 0, y: 0, width: 310, height: 44)
+            view = strip
+        } else { view = host }
+        window.contentView = view; window.setContentSize(view.frame.size)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
-            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
-            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("Preview bitmap unavailable") }
-            host.cacheDisplay(in: host.bounds, to: bitmap)
+            view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * 4),
+                pixelsHigh: Int(view.bounds.height * 4), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { fatalError("Preview bitmap unavailable") }
+            bitmap.size = view.bounds.size
+            view.cacheDisplay(in: view.bounds, to: bitmap)
             guard let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("Preview encoding failed") }
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

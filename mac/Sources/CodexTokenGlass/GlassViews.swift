@@ -101,7 +101,7 @@ struct DetailView: View {
             }
         }
         .padding(22)
-        .frame(width: 410, height: 640)
+        .frame(width: 410, height: ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] == nil ? 640 : 760)
         .modifier(GlassSurface(radius: 26, transparency: model.transparency))
         .preferredColorScheme(model.colorScheme)
         .tint(.primary)

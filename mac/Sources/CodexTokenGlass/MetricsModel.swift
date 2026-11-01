@@ -82,10 +82,10 @@ final class MetricsModel: ObservableObject {
         theme = preferences.string(forKey: "theme") ?? "auto"
         floating = preferences.object(forKey: "floating") == nil ? true : preferences.bool(forKey: "floating")
         selectedThread = preferences.string(forKey: "thread") ?? ""
-        home = preferences.string(forKey: "home") ?? ProcessInfo.processInfo.environment["CODEX_HOME"]
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
+        home = demo ? "/Users/demo/.codex" : (preferences.string(forKey: "home") ?? ProcessInfo.processInfo.environment["CODEX_HOME"]
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
         isDemo = demo
-        loginEnabled = SMAppService.mainApp.status == .enabled
+        loginEnabled = demo ? false : SMAppService.mainApp.status == .enabled
         if isDemo { snapshot = .demo }
     }
 
