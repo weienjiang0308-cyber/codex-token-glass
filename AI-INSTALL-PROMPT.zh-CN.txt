@@ -1,0 +1,20 @@
+请在我的 Windows 10/11 x64 电脑上安装并配置这个开源 Codex 状态栏：
+https://github.com/weienjiang0308-cyber/codex-token-glass
+
+请先阅读 README.md、install.ps1 和 docs/METRICS.md，确认这是 Windows 桌面伴随程序，
+不要运行 codex plugin add，也不要把它当成浏览器扩展。
+
+直接完成安装和验证，不要只给我教程。优先下载仓库 Releases 中的正式安装包，
+校验 SHA256 后运行 install.ps1，界面选择中文、保留 English 切换，
+跟随 Codex 配色，玻璃清透度设为 80，配置独立的每用户后台启动。
+不要修改我的模型、API 地址、密钥、Codex 上下文窗口、自动压缩阈值或 5% 缓冲，
+不要复制作者的本机配置，也不要上传我的会话日志。
+
+如果没有可用 Release，则克隆源码后运行 install.ps1 -FromSource；
+缺少 .NET 10 SDK 时，脚本可从微软下载并校验临时专用 SDK，不改系统 SDK。
+已有本程序时使用正常退出/本用户控制通道更新，不强制结束 Codex 或其他工作任务。
+
+完成后检查启动任务、进程和安装路径；如果 Codex 正在运行，打开详情和设置页，
+核对当前对话的 token/缓存字段并给我一张截图。
+速度必须说明为日志时间统计，不能声称是服务端瞬时实测。
+系统策略或权限确实阻止某一步时，说明具体阻碍和需要我做的最少操作。
