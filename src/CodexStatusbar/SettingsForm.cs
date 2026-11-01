@@ -7,6 +7,8 @@ namespace CodexStatusbar;
 
 internal sealed class SettingsForm : Form
 {
+    private uint _publicPreviewDpi;
+    internal uint MaterialDpi => _publicPreviewDpi == 0 ? (uint)DeviceDpi : _publicPreviewDpi;
     private readonly OverlayThemePalette _palette;
     private readonly NumericUpDown _window;
     private readonly NumericUpDown _percent;
@@ -229,14 +231,15 @@ internal sealed class SettingsForm : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        _optics.Capture(new Rectangle(Location,ClientSize),new Rectangle(Point.Empty,ClientSize),(uint)DeviceDpi);
+        if (_publicPreviewDpi == 0)
+            _optics.Capture(new Rectangle(Location,ClientSize),new Rectangle(Point.Empty,ClientSize),(uint)DeviceDpi);
         RefreshMaterial();
     }
 
     private void EnsureMaterial()
     {
         if(!_optics.Ready || !_materialDirty || ClientSize.Width<1 || ClientSize.Height<1)return;
-        var palette=_currentPalette();var u=DeviceDpi/96f;
+        var palette=_currentPalette();var u=MaterialDpi/96f;
         var alpha=DesktopMaterial.TransparencyEnabled?Math.Clamp(238-CodexUi.GlassTransparency,138,238):255;
         _optics.ReadingSurfaces((new Rectangle((int)(16*u),(int)(104*u),ClientSize.Width-(int)(32*u),(int)(527*u)),16*u,Color.FromArgb(alpha,palette.Background)));
         foreach(Control control in Controls)
@@ -272,7 +275,7 @@ internal sealed class SettingsForm : Form
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        using var shape = FrameShape(new Rectangle(0, 0, Width, Height), 32 * DeviceDpi / 96);
+        using var shape = FrameShape(new Rectangle(0, 0, Width, Height), (int)(32 * MaterialDpi / 96));
         Region?.Dispose(); Region = new Region(shape);
     }
     protected override void OnPaint(PaintEventArgs e)
@@ -280,14 +283,14 @@ internal sealed class SettingsForm : Form
         base.OnPaint(e);
         var palette = _currentPalette();
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var outline = FrameShape(new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1), 32 * DeviceDpi / 96);
+        using var outline = FrameShape(new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1), (int)(32 * MaterialDpi / 96));
         using var border = new Pen(palette.Border, 1);
         e.Graphics.DrawPath(border, outline);
         foreach (var number in new[] {_window,_percent})
         {
             if (number is null) continue;
             var area = Rectangle.Inflate(number.Bounds, 6, 5);
-            using var field = FrameShape(area, 10 * DeviceDpi / 96);
+            using var field = FrameShape(area, (int)(10 * MaterialDpi / 96));
             using var fill = new SolidBrush(CodexUi.Mix(palette.Background,palette.Value,.025));
             e.Graphics.FillPath(fill,field);
         }
@@ -303,6 +306,40 @@ internal sealed class SettingsForm : Form
         base.OnMouseDown(e);
         if (e.Button == MouseButtons.Left && e.Y < 94) { ReleaseCapture(); SendMessage(Handle, 0xA1, new IntPtr(2), IntPtr.Zero); }
     }
+    /// <summary>Render the actual controls at export density without showing a window or capturing the desktop.</summary>
+    internal Bitmap RenderPublicSnapshot(Bitmap syntheticBackdrop, uint dpi)
+    {
+        _themeTimer.Stop(); _materialTimer.Stop();
+        _publicPreviewDpi = dpi;
+        AutoScaleMode = AutoScaleMode.None;
+        MaximumSize = new Size(32767, 32767);
+        StartPosition = FormStartPosition.Manual;
+        Location = new Point(-20000, -20000);
+        TopMost = false; ShowInTaskbar = false;
+        var factor = dpi / 96f;
+        var controls = Controls.Cast<Control>().Select(c => (Control: c, c.Bounds, Font: c.Font)).ToArray();
+        SuspendLayout();
+        ClientSize = new Size((int)(552 * factor), (int)(730 * factor));
+        foreach (var item in controls)
+        {
+            var r = item.Bounds;
+            item.Control.Font = new Font(item.Font.FontFamily, item.Font.Size * factor, item.Font.Style, GraphicsUnit.Point);
+            item.Control.Bounds = Rectangle.Round(new RectangleF(r.X * factor, r.Y * factor, r.Width * factor, r.Height * factor));
+        }
+        ResumeLayout(false);
+        _optics.TransparencyOverride = 80;
+        _optics.SetBackdrop(syntheticBackdrop, new Rectangle(Point.Empty, ClientSize), dpi, motionOverride: false);
+        _materialDirty = true;
+        Show();
+        PerformLayout();
+        var bitmap = new Bitmap(Width, Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+        bitmap.SetResolution(dpi, dpi);
+        return bitmap;
+    }
+
+    protected override bool ShowWithoutActivation => _publicPreviewDpi != 0 || base.ShowWithoutActivation;
+
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
     {
         if (keyData == Keys.Escape) { Close(); return true; }
@@ -347,7 +384,7 @@ internal sealed class GlassButton : Button
         if(!optical){e.Graphics.FillPath(fill,path);e.Graphics.DrawPath(border,path);}
         if(Text=="×")
         {
-            var x=ClientSize.Width/2f;var y=ClientSize.Height/2f;var u=DeviceDpi/96f;
+            var x=ClientSize.Width/2f;var y=ClientSize.Height/2f;var u=(Parent is SettingsForm parent ? parent.MaterialDpi : (uint)DeviceDpi)/96f;
             using var pen=new Pen(ForeColor,1.8f*u){StartCap=LineCap.Round,EndCap=LineCap.Round};
             e.Graphics.DrawLine(pen,x-5*u,y-5*u,x+5*u,y+5*u);e.Graphics.DrawLine(pen,x+5*u,y-5*u,x-5*u,y+5*u);
         }
@@ -368,7 +405,7 @@ internal class ContextSlider : Control
     {
         get
         {
-            var u=DeviceDpi/96f;var x=22*u+(Width-44*u)*(_value-Minimum)/Math.Max(1f,Maximum-Minimum);
+            var u=(Parent is SettingsForm parent ? parent.MaterialDpi : (uint)DeviceDpi)/96f;var x=22*u+(Width-44*u)*(_value-Minimum)/Math.Max(1f,Maximum-Minimum);
             var width=(Capture?40:32)*u;var height=(Capture?28:24)*u;
             return Rectangle.Round(new RectangleF(x-width/2,Height/2f-height/2,width,height));
         }
