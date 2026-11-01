@@ -35,7 +35,7 @@ trap 'rm -rf -- "$install_stage"' EXIT
 ditto -x -k "$package" "$install_stage"
 app="$install_stage/Codex Token Glass.app"
 [[ -x "$app/Contents/MacOS/CodexTokenGlass" && -x "$app/Contents/Helpers/CodexTokenMetrics" ]] || { echo 'Incomplete application bundle.' >&2; exit 1; }
-lipo -verify_arch "$(uname -m)" "$app/Contents/MacOS/CodexTokenGlass"
+lipo "$app/Contents/MacOS/CodexTokenGlass" -verify_arch "$(uname -m)"
 codesign --verify --deep --strict "$app"
 "$app/Contents/Helpers/CodexTokenMetrics" --self-test "$app/Contents/Resources/fixtures"
 if $verify_only; then printf 'PASS: installer verified checksum, architecture, code signature, and metrics tests without installing.\n'; exit 0; fi
