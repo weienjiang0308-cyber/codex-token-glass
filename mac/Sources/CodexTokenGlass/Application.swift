@@ -50,18 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--enable-login") { model.setLogin(true) }
         if CommandLine.arguments.contains("--smoke-test") {
             // Layout both screens with synthetic data; never inspect runner accounts.
-            let exporting = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] != nil
-            let host = NSHostingView(rootView: DetailView(model: model)
-                .scaleEffect(exporting ? 4 : 1, anchor: .topLeading)
-                .frame(width: exporting ? 1640 : 410, height: exporting ? 3040 : 640, alignment: .topLeading))
-            host.frame = NSRect(x: 0, y: 0, width: exporting ? 1640 : 410, height: exporting ? 3040 : 640)
-            host.layoutSubtreeIfNeeded()
             if let directory = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] {
-                let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
-                window.title = "Synthetic preview"; window.contentView = host
-                window.center(); window.orderFrontRegardless()
-                exportPreview(index: 0, host: host, window: window, directory: URL(fileURLWithPath: directory))
+                NativeGallery(model: model, directory: URL(fileURLWithPath: directory)).run()
             } else {
+                let host = NSHostingView(rootView: DetailView(model: model))
+                host.frame = NSRect(x: 0, y: 0, width: 410, height: 640)
+                host.layoutSubtreeIfNeeded()
                 model.settingsVisible = true; host.layoutSubtreeIfNeeded()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     print("PASS: macOS native views initialized with synthetic data")
@@ -69,49 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else if CommandLine.arguments.contains("--demo") { showPopover() }
-    }
-
-    private func exportPreview(index: Int, host: NSView, window: NSWindow, directory: URL) {
-        let variants = ["zh", "en"].flatMap { language in
-            ["light", "dark"].flatMap { theme in
-                (["details", "settings", "strip"] + (language == "zh" ? ["waiting"] : [])).map { kind in
-                    ("macos-\(kind)-\(theme)-\(language)", kind, theme, language)
-                }
-            }
-        }
-        guard index < variants.count else {
-            print("PASS: 14 native views rendered at 4x density with synthetic data and a synthetic home path")
-            window.orderOut(nil); NSApplication.shared.terminate(nil); return
-        }
-        let variant = variants[index]
-        model.settingsVisible = variant.1 == "settings"; model.theme = variant.2; model.language = variant.3
-        model.snapshot = variant.1 == "waiting" ? MetricsSnapshot() : .demo
-        let view: NSView
-        if variant.1 == "strip" {
-            let strip = NSHostingView(rootView: FloatingStrip(model: model).frame(width: 310, height: 44)
-                .scaleEffect(4, anchor: .topLeading).frame(width: 1240, height: 176, alignment: .topLeading))
-            strip.frame = NSRect(x: 0, y: 0, width: 1240, height: 176)
-            view = strip
-        } else { view = host }
-        let captureSize = variant.1 == "strip" ? NSSize(width: 1240, height: 176) : NSSize(width: 1640, height: 3040)
-        window.setContentSize(captureSize)
-        window.contentView = view
-        view.setFrameSize(captureSize)
-        window.appearance = NSAppearance(named: variant.2 == "dark" ? .darkAqua : .aqua)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
-            view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width),
-                pixelsHigh: Int(view.bounds.height), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
-                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { fatalError("Preview bitmap unavailable") }
-            bitmap.size = view.bounds.size
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            guard let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("Preview encoding failed") }
-            do {
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                try png.write(to: directory.appendingPathComponent(variant.0 + ".png"))
-            } catch { fatalError("Preview export failed") }
-            exportPreview(index: index + 1, host: host, window: window, directory: directory)
-        }
     }
 
     @objc private func togglePopover() { popover.isShown ? popover.performClose(nil) : showPopover() }
