@@ -36,6 +36,7 @@ internal static class MetricsTests
             File.AppendAllText(target, lastUsage + "\n");
             Check(monitor.Read().TotalTokens == snapshot.TotalTokens, "incremental duplicate is not summed");
             File.WriteAllText(target, File.ReadAllText(legacy.Path));
+            Check(monitor.Read().Status == "sessionChanged", "rotation cannot leak another session's usage under the previous identity");
             Check(monitor.Read().TotalTokens == legacy.State.TotalTokens, "rotation reinitializes parser");
             Check(!MetricsMonitor.IsWithin(Path.Combine(scratch, "sessions"), Path.Combine(scratch, "outside.jsonl")), "rollout path containment");
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(snapshot, Program.Json));
@@ -60,8 +61,11 @@ internal static class MetricsTests
         catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
         finally
         {
-            // scratch is generated directly under the OS temp directory above.
-            Directory.Delete(scratch, recursive: true);
+            var resolved = Path.GetFullPath(scratch);
+            var tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!resolved.StartsWith(tempRoot, StringComparison.Ordinal) || !Path.GetFileName(resolved).StartsWith("CodexTokenGlass-tests-", StringComparison.Ordinal))
+                throw new InvalidOperationException("Refusing test cleanup outside the generated temp directory");
+            Directory.Delete(resolved, recursive: true);
         }
     }
 

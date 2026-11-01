@@ -132,6 +132,13 @@ internal sealed class MetricsMonitor(string home, string? selectedThread)
         if (_reader?.Path != choice.Path) { _reader = new(choice.Path); _reader.Initialize(); }
         else if (_reader.TryUpdate() == RolloutUpdateResult.NeedsReinitialize) _reader.Initialize();
         var state = _reader.State;
+        if (state.SessionMetaId is string actualId && actualId != choice.Id)
+        {
+            // A rotated path or stale database entry must not make a pinned
+            // conversation display another thread's usage for even one frame.
+            _reader = null; _nextScan = DateTime.MinValue;
+            return basis with { Status = "sessionChanged", SessionId = null, Warnings = ["session-identity-changed"] };
+        }
         if (!state.HasCumulativeUsage) return basis with { Status = "noUsage", Warnings = state.Warnings.ToArray() };
         return basis with
         {
