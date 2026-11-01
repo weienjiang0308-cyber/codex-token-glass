@@ -3,6 +3,11 @@ import SwiftUI
 import Combine
 import CoreGraphics
 
+@MainActor
+private final class GalleryWindow: NSWindow {
+    override var backingScaleFactor: CGFloat { 4 }
+}
+
 @main
 enum Application {
     @MainActor static func main() {
@@ -50,11 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--enable-login") { model.setLogin(true) }
         if CommandLine.arguments.contains("--smoke-test") {
             // Layout both screens with synthetic data; never inspect runner accounts.
-            let host = NSHostingView(rootView: DetailView(model: model))
+            let host = NSHostingView(rootView: DetailView(model: model).environment(\.displayScale, 4))
             host.frame = NSRect(x: 0, y: 0, width: 410, height: ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] == nil ? 640 : 760)
             host.layoutSubtreeIfNeeded()
             if let directory = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] {
-                let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                let window = GalleryWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
                 window.title = "Synthetic preview"; window.contentView = host
                 window.center(); window.orderFrontRegardless()
                 exportPreview(index: 0, host: host, window: window, directory: URL(fileURLWithPath: directory))
@@ -85,11 +90,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.snapshot = variant.1 == "waiting" ? MetricsSnapshot() : .demo
         let view: NSView
         if variant.1 == "strip" {
-            let strip = NSHostingView(rootView: FloatingStrip(model: model))
+            let strip = NSHostingView(rootView: FloatingStrip(model: model).environment(\.displayScale, 4))
             strip.frame = NSRect(x: 0, y: 0, width: 310, height: 44)
             view = strip
         } else { view = host }
         window.contentView = view; window.setContentSize(view.frame.size)
+        view.viewDidChangeBackingProperties()
+        view.layer?.contentsScale = 4
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
             view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
             guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * 4),
