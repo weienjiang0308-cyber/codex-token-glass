@@ -101,7 +101,7 @@ struct DetailView: View {
             }
         }
         .padding(22)
-        .frame(width: 410, height: 570)
+        .frame(width: 410, height: 640)
         .modifier(GlassSurface(radius: 26, transparency: model.transparency))
         .preferredColorScheme(model.colorScheme)
         .tint(.primary)
@@ -165,6 +165,7 @@ struct DetailView: View {
                     Spacer(); Text("\(Int(model.transparency))%").monospacedDigit().foregroundStyle(.secondary)
                 }.font(.system(size: 12))
                 Slider(value: $model.transparency, in: 0...100, step: 1) { Text(model.tr("玻璃清透度", "Glass clarity")) }
+                    .labelsHidden().accessibilityLabel(model.tr("玻璃清透度", "Glass clarity"))
                 Text(model.tr("macOS 26 使用原生 Liquid Glass；较早系统使用系统模糊材质。系统的减少透明度设置优先。", "Native Liquid Glass on macOS 26; system blur material on earlier versions. Reduce Transparency takes priority."))
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -174,7 +175,7 @@ struct DetailView: View {
                 Toggle(model.tr("登录时启动", "Launch at login"), isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
                 Text(model.tr("浮条跟随 Codex 窗口外框，第一版不定位输入框工具栏。", "The strip follows the Codex window frame. Composer toolbar docking is not included yet."))
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }.font(.system(size: 12))
+            }.font(.system(size: 12)).toggleStyle(.switch).controlSize(.small)
             Divider().opacity(0.6)
             VStack(alignment: .leading, spacing: 10) {
                 Text(model.tr("数据目录", "Data directory")).font(.system(size: 13, weight: .semibold))

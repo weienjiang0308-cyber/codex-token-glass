@@ -25,7 +25,10 @@ cp -R fixtures "$app/Contents/Resources/fixtures"
 codesign --force --sign - --entitlements mac/helper-entitlements.plist "$app/Contents/Helpers/CodexTokenMetrics"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
-CODEX_TOKEN_GLASS_PREVIEW_DIR="$repo_root/mac-dist/$rid/preview" "$app/Contents/MacOS/CodexTokenGlass" --smoke-test
+CODEX_TOKEN_GLASS_PREVIEW_DIR="$repo_root/mac-dist/$rid/preview" python3 - "$app/Contents/MacOS/CodexTokenGlass" <<'PY'
+import subprocess, sys
+subprocess.run([sys.argv[1], '--smoke-test'], check=True, timeout=60)
+PY
 archive="$repo_root/mac-dist/$rid/CodexTokenGlass-$rid.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 (cd "$repo_root/mac-dist/$rid" && shasum -a 256 "CodexTokenGlass-$rid.zip" > SHA256SUMS.txt)

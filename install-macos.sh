@@ -6,12 +6,14 @@ repo_root="$(cd "$(dirname "$0")" && pwd -P)"
 package=''
 checksum=''
 from_source=false
+verify_only=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-source) from_source=true; shift ;;
+    --verify-only) verify_only=true; shift ;;
     --package) [[ $# -ge 2 ]] || exit 2; package="$2"; shift 2 ;;
     --sha256) [[ $# -ge 2 ]] || exit 2; checksum="$2"; shift 2 ;;
-    *) echo 'Usage: bash install-macos.sh --package FILE.zip [--sha256 HASH] | --from-source' >&2; exit 2 ;;
+    *) echo 'Usage: bash install-macos.sh --package FILE.zip [--sha256 HASH] [--verify-only] | --from-source' >&2; exit 2 ;;
   esac
 done
 case "$(uname -m)" in arm64) rid=osx-arm64 ;; x86_64) rid=osx-x64 ;; *) exit 1 ;; esac
@@ -36,6 +38,7 @@ app="$install_stage/Codex Token Glass.app"
 lipo -verify_arch "$(uname -m)" "$app/Contents/MacOS/CodexTokenGlass"
 codesign --verify --deep --strict "$app"
 "$app/Contents/Helpers/CodexTokenMetrics" --self-test "$app/Contents/Resources/fixtures"
+if $verify_only; then printf 'PASS: installer verified checksum, architecture, code signature, and metrics tests without installing.\n'; exit 0; fi
 destination="$HOME/Applications/Codex Token Glass.app"
 if pgrep -f "$destination/Contents/MacOS/CodexTokenGlass" >/dev/null; then
   echo 'Quit Codex Token Glass from its menu before updating. Codex itself can keep running.' >&2; exit 1

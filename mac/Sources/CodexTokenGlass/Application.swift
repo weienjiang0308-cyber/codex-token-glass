@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.target = self; statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 410, height: 570)
+        popover.contentSize = NSSize(width: 410, height: 640)
         popover.contentViewController = NSHostingController(rootView: DetailView(model: model))
         model.showDetails = { [weak self] in self?.showPopover() }
         model.closeDetails = { [weak self] in self?.popover.performClose(nil) }
@@ -51,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--smoke-test") {
             // Layout both screens with synthetic data; never inspect runner accounts.
             let host = NSHostingView(rootView: DetailView(model: model))
-            host.frame = NSRect(x: 0, y: 0, width: 410, height: 570)
+            host.frame = NSRect(x: 0, y: 0, width: 410, height: 640)
             host.layoutSubtreeIfNeeded()
             if let directory = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] {
                 let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
