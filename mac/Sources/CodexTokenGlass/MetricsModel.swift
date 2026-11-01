@@ -10,7 +10,7 @@ struct SessionChoice: Decodable, Identifiable {
 struct MetricsSnapshot: Decodable {
     var schemaVersion: Int? = 1
     var status: String = "waiting"
-    var selectionMode: String? = "recentActivity"
+    var selectionMode: String? = "desktopDisconnected"
     var sessionId: String?
     var title: String? = ""
     var updatedAt: String?
@@ -35,10 +35,15 @@ struct MetricsSnapshot: Decodable {
     var themeKind: String?
     var warnings: [String]?
     var sessions: [SessionChoice]?
+    var desktopConnected: Bool?
+    var desktopLocalCount: Int?
+    var desktopRemoteCount: Int?
+    var routingError: String?
 
     static var demo: MetricsSnapshot {
         var value = MetricsSnapshot()
         value.status = "ready"; value.sessionId = "synthetic-demo"; value.title = "Codex Token Glass · Demo"
+        value.selectionMode = "desktopObserved"; value.desktopConnected = true; value.desktopLocalCount = 1
         value.inputTokens = 220000; value.cachedInputTokens = 204000; value.uncachedInputTokens = 16000
         value.outputTokens = 1700; value.reasoningTokens = 250; value.totalTokens = 221700
         value.cacheHitPercent = 92.7; value.speed = 100; value.averageSpeed = 100; value.peakSpeed = 200
@@ -106,6 +111,31 @@ final class MetricsModel: ObservableObject {
         return String(value)
     }
     func seconds(_ value: Int64?) -> String { value.map { String(format: "%.1f s", Double($0) / 1000) } ?? "—" }
+    static let recentActivitySelection = "@recent"
+    var sourceHint: String {
+        switch snapshot.selectionMode {
+        case "pinned":
+            return tr("已固定会话，切换 Codex 窗口不会自动切换。", "Pinned conversation; does not follow window changes.")
+        case "desktopObserved":
+            return tr("已跟随桌面报告的唯一会话；多窗口焦点不作保证。", "Following the one conversation reported by Desktop; window focus is not guaranteed.")
+        case "desktopAmbiguous":
+            return tr("桌面报告了多个会话，请在上方固定一个目标。", "Desktop reports multiple conversations. Pin one above.")
+        case "desktopRemote":
+            return tr("当前订阅来自远程主机，本机无法读取其记录。可固定一个本地会话。", "The subscription is remote; its logs are not available locally. You can pin a local conversation.")
+        case "desktopWaiting":
+            if snapshot.routingError == "unsupported-following-version" {
+                return tr("当前桌面通知版本暂不兼容。可固定会话或选择“最近活动”。", "This Desktop notification version is not supported. Pin a conversation or choose Recent activity.")
+            }
+            return tr("正在等待桌面会话通知。没有明确目标时不显示其他会话的数据。", "Waiting for Desktop conversation metadata. Other conversations are not substituted.")
+        case "desktopDisconnected":
+            if snapshot.routingError == "untrusted-local-peer" {
+                return tr("本地桌面连接校验未通过。可固定会话或选择“最近活动”。", "The local Desktop connection could not be verified. Pin a conversation or choose Recent activity.")
+            }
+            return tr("尚未连接 Codex 桌面。可打开 Codex，或主动选择“最近活动”。", "Desktop is not connected. Open Codex or explicitly choose Recent activity.")
+        default:
+            return tr("最近活动模式，可能与前台对话不同。", "Recent activity may differ from the foreground conversation.")
+        }
+    }
 
     func start() {
         guard !isDemo else { return }
@@ -118,7 +148,9 @@ final class MetricsModel: ObservableObject {
         }
         let current = UUID(); generation = current
         let child = Process(); child.executableURL = helper
-        child.arguments = ["--watch", "--home", home] + (selectedThread.isEmpty ? [] : ["--thread", selectedThread])
+        let selection: [String] = selectedThread == Self.recentActivitySelection ? ["--recent-activity"]
+            : selectedThread.isEmpty ? [] : ["--thread", selectedThread]
+        child.arguments = ["--watch", "--home", home] + selection
         let pipe = Pipe(); let stderr = Pipe(); child.standardOutput = pipe; child.standardError = stderr
         // stderr is drained without retaining messages, paths, or session contents.
         stderr.fileHandleForReading.readabilityHandler = { handle in

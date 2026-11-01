@@ -55,6 +55,7 @@ internal static class MetricsTests
             Check(dbSnapshot.Title == "Synthetic database title" && dbSnapshot.TotalTokens == 221700, "platform SQLite library and explicit home selection");
             Check(before.SequenceEqual(SHA256.HashData(File.ReadAllBytes(dbPath))), "Codex database remains unchanged after reading");
             Check(!File.Exists(Path.Combine(scratch, "config.toml")) && !File.Exists(Path.Combine(scratch, "auth.json")), "metrics do not create configuration or credentials");
+            DesktopIpcTests.Run(Check, scratch);
             Console.WriteLine($"PASS: {checks} portable checks; shared Windows parser unchanged.");
             return 0;
         }

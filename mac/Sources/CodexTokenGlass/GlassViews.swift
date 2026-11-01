@@ -113,9 +113,7 @@ struct DetailView: View {
                 Text(model.snapshot.title?.isEmpty == false ? model.snapshot.title! : model.tr("等待 Codex 使用记录", "Waiting for Codex usage"))
                     .font(.system(size: 13, weight: .medium)).lineLimit(2).textSelection(.enabled)
                 sessionPicker
-                Text(model.selectedThread.isEmpty
-                    ? model.tr("最近活动模式，未验证当前窗口的会话", "Recent activity; foreground conversation is not verified")
-                    : model.tr("已固定会话，切换 Codex 窗口不会自动切换", "Pinned conversation; does not follow window changes"))
+                Text(model.sourceHint)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .firstTextBaseline, spacing: 20) {
@@ -140,7 +138,7 @@ struct DetailView: View {
                 row(model.tr("任务用时", "Task duration"), model.seconds(model.snapshot.taskMs))
                 row(model.tr("模型生成时间", "Model generation time"), model.seconds(model.snapshot.generationMs))
             }
-            if model.snapshot.status != "ready" {
+            if model.snapshot.status != "ready" && !(model.snapshot.selectionMode ?? "").hasPrefix("desktop") {
                 Text(model.tr("尚无可显示的用量。请在 Codex 中完成一次响应，或在设置中选择正确的数据目录。", "No usage is available yet. Complete a response in Codex or choose its data directory in Settings."))
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -199,11 +197,13 @@ struct DetailView: View {
 
     private var sessionPicker: some View {
         Picker(model.tr("会话", "Conversation"), selection: $model.selectedThread) {
-            Text(model.tr("最近活动", "Recent activity")).tag("")
+            Text(model.tr("自动跟随桌面", "Follow Desktop automatically")).tag("")
+            Text(model.tr("最近活动（手动模式）", "Recent activity (manual)")).tag(MetricsModel.recentActivitySelection)
             ForEach(model.snapshot.sessions ?? []) { session in
                 Text(session.title).tag(session.id)
             }
-            if !model.selectedThread.isEmpty && !(model.snapshot.sessions ?? []).contains(where: { $0.id == model.selectedThread }) {
+            if !model.selectedThread.isEmpty && model.selectedThread != MetricsModel.recentActivitySelection
+                && !(model.snapshot.sessions ?? []).contains(where: { $0.id == model.selectedThread }) {
                 Text(model.tr("固定会话（暂不可用）", "Pinned conversation (unavailable)")).tag(model.selectedThread)
             }
         }.font(.system(size: 12))

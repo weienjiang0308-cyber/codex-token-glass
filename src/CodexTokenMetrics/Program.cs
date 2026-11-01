@@ -26,7 +26,12 @@ internal static class Program
             if (args.Contains("--self-test")) return MetricsTests.Run(Value("--self-test") ?? "fixtures");
             var home = Value("--home") ?? Environment.GetEnvironmentVariable("CODEX_HOME")
                 ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
-            var monitor = new MetricsMonitor(Path.GetFullPath(home), Value("--thread"));
+            home = Path.GetFullPath(home);
+            var forcedThread = Value("--thread");
+            var useDesktop = OperatingSystem.IsMacOS() && forcedThread is null && !args.Contains("--recent-activity");
+            await using var desktop = new DesktopIpcClient(() => DesktopIpcClient.Endpoints(home));
+            if (useDesktop) desktop.Start();
+            var monitor = new MetricsMonitor(home, forcedThread, useDesktop ? desktop.State.Read : null);
             using var stop = new CancellationTokenSource();
             Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
             do
@@ -76,17 +81,22 @@ internal sealed record MetricsSnapshot
     public string TimingSource { get; init; } = "logModelIntervals";
     public string Carrier { get; init; } = "none";
     public string ThemeKind { get; init; } = "unknown";
+    public bool DesktopConnected { get; init; }
+    public int DesktopLocalCount { get; init; }
+    public int DesktopRemoteCount { get; init; }
+    public string? RoutingError { get; init; }
     public string[] Warnings { get; init; } = [];
     // Paths never cross the UI bridge; they are only used by this process.
     public object[] Sessions { get; init; } = [];
 }
 
-internal sealed class MetricsMonitor(string home, string? selectedThread)
+internal sealed class MetricsMonitor(string home, string? selectedThread, Func<DesktopRoute>? desktopRoute = null)
 {
     private readonly string _root = Path.Combine(home, "sessions");
     private readonly string _database = Path.Combine(home, "state_5.sqlite");
     private List<SessionChoice> _sessions = [];
     private DateTime _nextScan;
+    private DateTime _nextMissingScan;
     private RolloutReader? _reader;
     private readonly CodexThemeSource _theme = new(Path.Combine(home, "config.toml"));
 
@@ -112,18 +122,37 @@ internal sealed class MetricsMonitor(string home, string? selectedThread)
             _sessions = Scan();
             _nextScan = now.AddSeconds(15);
         }
-        var recent = selectedThread is null ? StateDatabase.TryReadMostRecentThread(_database)
-            : StateDatabase.TryReadThread(_database, selectedThread);
+        var desktop = selectedThread is null ? desktopRoute?.Invoke() : null;
+        var mode = selectedThread is not null ? "pinned" : "recentActivity";
+        var target = selectedThread;
+        if (desktop is not null)
+        {
+            mode = !desktop.Connected ? "desktopDisconnected" : !desktop.Settled ? "desktopWaiting"
+                : desktop.LocalCount + desktop.RemoteCount > 1 ? "desktopAmbiguous"
+                : desktop.RemoteCount > 0 ? "desktopRemote" : desktop.LocalCount == 1 && desktop.ThreadId is not null ? "desktopObserved" : "desktopWaiting";
+            target = mode == "desktopObserved" ? desktop.ThreadId : null;
+        }
+        var canSelect = desktop is null || target is not null;
+        var recent = !canSelect ? null : target is null ? StateDatabase.TryReadMostRecentThread(_database)
+            : StateDatabase.TryReadThread(_database, target);
         SessionChoice? choice = null;
         if (recent?.RolloutPath is string raw && Path.IsPathFullyQualified(raw) && IsWithin(_root, raw) && File.Exists(raw))
             choice = new(recent.Id, recent.Title ?? recent.Id, raw, File.GetLastWriteTimeUtc(raw));
-        choice ??= selectedThread is null ? _sessions.FirstOrDefault() : _sessions.FirstOrDefault(s => s.Id == selectedThread);
+        if (canSelect) choice ??= target is null ? _sessions.FirstOrDefault() : _sessions.FirstOrDefault(s => s.Id == target);
+        if (canSelect && target is not null && choice is null && now >= _nextMissingScan)
+        {
+            _sessions = Scan(); _nextMissingScan = now.AddSeconds(2);
+            choice = _sessions.FirstOrDefault(s => s.Id == target);
+        }
         var choices = _sessions;
         if (choice is not null && !choices.Any(s => s.Id == choice.Id)) choices = [choice, .. choices];
         var basis = new MetricsSnapshot
         {
             ThemeKind = _theme.Current.ToString().ToLowerInvariant(),
-            SelectionMode = selectedThread is null ? "recentActivity" : "pinned",
+            SelectionMode = mode,
+            DesktopConnected = desktop?.Connected ?? false,
+            DesktopLocalCount = desktop?.LocalCount ?? 0, DesktopRemoteCount = desktop?.RemoteCount ?? 0,
+            RoutingError = desktop?.ErrorCode,
             SessionId = choice?.Id,
             Title = choice?.Title ?? "",
             Sessions = choices.Take(40).Select(s => (object)new { s.Id, s.Title }).ToArray()
