@@ -81,8 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let entry = windows.first(where: {
                   ($0[kCGWindowOwnerPID as String] as? Int32) == front.processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0
               }),
-              let rawBounds = entry[kCGWindowBounds as String] as? CFDictionary,
-              let bounds = CGRect(dictionaryRepresentation: rawBounds), bounds.width >= 350, bounds.height >= 180,
+              let rawBounds = entry[kCGWindowBounds as String] as? [String: Any],
+              let bounds = CGRect(dictionaryRepresentation: rawBounds as CFDictionary), bounds.width >= 350, bounds.height >= 180,
               let main = NSScreen.screens.first else { panel?.orderOut(nil); return }
         // Quartz uses a top-left origin; AppKit uses the main display bottom-left.
         let size = NSSize(width: min(310, bounds.width - 32), height: 44)

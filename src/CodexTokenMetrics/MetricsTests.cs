@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using CodexStatusbar;
 
 namespace CodexTokenMetrics;
@@ -41,6 +43,17 @@ internal static class MetricsTests
             Check(!json.RootElement.TryGetProperty("path", out _) && !json.RootElement.GetProperty("sessions")[0].TryGetProperty("path", out _), "no local file paths in UI bridge");
             var empty = new MetricsMonitor(Path.Combine(scratch, "missing"), null).Read();
             Check(empty.InputTokens is null && empty.Speed is null, "missing data remains unknown");
+            var dbLog = Path.Combine(scratch, "sessions", "database-selected.jsonl");
+            File.Copy(modern.Path, dbLog);
+            var dbPath = Path.Combine(scratch, "state_5.sqlite");
+            var sql = "CREATE TABLE threads(id TEXT, title TEXT, rollout_path TEXT, tokens_used INTEGER, recency_at_ms INTEGER, archived INTEGER);" +
+                $"INSERT INTO threads VALUES ('{s.SessionMetaId}', 'Synthetic database title', '{dbLog.Replace("'", "''")}', 221700, 1234, 0);";
+            CreateDatabase(dbPath, sql);
+            var before = SHA256.HashData(File.ReadAllBytes(dbPath));
+            var dbSnapshot = new MetricsMonitor(scratch, s.SessionMetaId).Read();
+            Check(dbSnapshot.Title == "Synthetic database title" && dbSnapshot.TotalTokens == 221700, "platform SQLite library and explicit home selection");
+            Check(before.SequenceEqual(SHA256.HashData(File.ReadAllBytes(dbPath))), "Codex database remains unchanged after reading");
+            Check(!File.Exists(Path.Combine(scratch, "config.toml")) && !File.Exists(Path.Combine(scratch, "auth.json")), "metrics do not create configuration or credentials");
             Console.WriteLine($"PASS: {checks} portable checks; shared Windows parser unchanged.");
             return 0;
         }
@@ -51,4 +64,24 @@ internal static class MetricsTests
             Directory.Delete(scratch, recursive: true);
         }
     }
+
+    private static void CreateDatabase(string path, string sql)
+    {
+        if (sqlite3_open_v2(path, out var db, 6, IntPtr.Zero) != 0) throw new InvalidOperationException("Could not create isolated SQLite fixture");
+        try
+        {
+            var status = sqlite3_exec(db, sql, IntPtr.Zero, IntPtr.Zero, out var message);
+            if (message != IntPtr.Zero) sqlite3_free(message);
+            if (status != 0) throw new InvalidOperationException("Could not populate isolated SQLite fixture");
+        }
+        finally { _ = sqlite3_close_v2(db); }
+    }
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_open_v2([MarshalAs(UnmanagedType.LPUTF8Str)] string path, out IntPtr db, int flags, IntPtr vfs);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_exec(IntPtr db, [MarshalAs(UnmanagedType.LPUTF8Str)] string sql, IntPtr callback, IntPtr arg, out IntPtr error);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_close_v2(IntPtr db);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void sqlite3_free(IntPtr message);
 }

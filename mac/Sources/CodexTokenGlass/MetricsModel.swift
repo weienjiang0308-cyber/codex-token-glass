@@ -62,7 +62,8 @@ final class MetricsModel: ObservableObject {
     @Published var loginEnabled = false
     var showDetails: (() -> Void)?
     var closeDetails: (() -> Void)?
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private var pending = Data()
     private var process: Process?
     private var output: Pipe?
     private var errors: Pipe?
@@ -72,14 +73,18 @@ final class MetricsModel: ObservableObject {
     let isDemo: Bool
 
     init() {
-        language = UserDefaults.standard.string(forKey: "language") ?? "zh"
-        transparency = UserDefaults.standard.object(forKey: "transparency") == nil ? 80 : UserDefaults.standard.double(forKey: "transparency")
-        theme = UserDefaults.standard.string(forKey: "theme") ?? "auto"
-        floating = UserDefaults.standard.object(forKey: "floating") == nil ? true : UserDefaults.standard.bool(forKey: "floating")
-        selectedThread = UserDefaults.standard.string(forKey: "thread") ?? ""
-        home = UserDefaults.standard.string(forKey: "home") ?? ProcessInfo.processInfo.environment["CODEX_HOME"]
+        let demo = CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test")
+        let preferences = demo ? UserDefaults(suiteName: "CodexTokenGlass.SyntheticPreview")! : UserDefaults.standard
+        if demo { preferences.removePersistentDomain(forName: "CodexTokenGlass.SyntheticPreview") }
+        defaults = preferences
+        language = preferences.string(forKey: "language") ?? "zh"
+        transparency = preferences.object(forKey: "transparency") == nil ? 80 : preferences.double(forKey: "transparency")
+        theme = preferences.string(forKey: "theme") ?? "auto"
+        floating = preferences.object(forKey: "floating") == nil ? true : preferences.bool(forKey: "floating")
+        selectedThread = preferences.string(forKey: "thread") ?? ""
+        home = preferences.string(forKey: "home") ?? ProcessInfo.processInfo.environment["CODEX_HOME"]
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
-        isDemo = CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test")
+        isDemo = demo
         loginEnabled = SMAppService.mainApp.status == .enabled
         if isDemo { snapshot = .demo }
     }
@@ -116,7 +121,9 @@ final class MetricsModel: ObservableObject {
         child.arguments = ["--watch", "--home", home] + (selectedThread.isEmpty ? [] : ["--thread", selectedThread])
         let pipe = Pipe(); let stderr = Pipe(); child.standardOutput = pipe; child.standardError = stderr
         // stderr is drained without retaining messages, paths, or session contents.
-        stderr.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            if handle.availableData.isEmpty { handle.readabilityHandler = nil }
+        }
         child.terminationHandler = { [weak self] child in
             DispatchQueue.main.async {
                 guard let self, self.generation == current, !self.stopping else { return }
@@ -128,25 +135,31 @@ final class MetricsModel: ObservableObject {
                 self.retry = retry; DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: retry)
             }
         }
-        var pending = Data()
+        pending.removeAll()
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let bytes = handle.availableData
-            guard !bytes.isEmpty else { return }
-            pending.append(bytes)
-            if pending.count > 2 * 1024 * 1024 { pending.removeAll(); return }
-            while let end = pending.firstIndex(of: 10) {
-                let line = pending.prefix(upTo: end); pending.removeSubrange(...end)
-                guard let value = try? JSONDecoder().decode(MetricsSnapshot.self, from: line) else { continue }
-                DispatchQueue.main.async {
-                    guard let self, self.generation == current else { return }
-                    self.snapshot = value; self.error = nil
-                }
+            guard !bytes.isEmpty else { handle.readabilityHandler = nil; return }
+            DispatchQueue.main.async {
+                guard let self, self.generation == current else { return }
+                self.receive(bytes)
             }
         }
         do { try child.run(); process = child; output = pipe; errors = stderr }
         catch {
             pipe.fileHandleForReading.readabilityHandler = nil; stderr.fileHandleForReading.readabilityHandler = nil
             self.error = tr("无法启动数据读取组件。", "Could not start the metrics helper.")
+        }
+    }
+
+    private func receive(_ bytes: Data) {
+        // Accumulate and decode only on the main actor; FileHandle callbacks can
+        // arrive concurrently and must not mutate a captured buffer.
+        pending.append(bytes)
+        if pending.count > 2 * 1024 * 1024 { pending.removeAll(); return }
+        while let end = pending.firstIndex(of: 10) {
+            let line = Data(pending.prefix(upTo: end)); pending.removeSubrange(...end)
+            guard let value = try? JSONDecoder().decode(MetricsSnapshot.self, from: line) else { continue }
+            snapshot = value; error = nil
         }
     }
 
@@ -170,6 +183,6 @@ final class MetricsModel: ObservableObject {
             if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             loginEnabled = SMAppService.mainApp.status == .enabled
             if enabled && !loginEnabled { error = tr("请在系统设置的登录项中允许启动。", "Allow this app in System Settings → Login Items.") }
-        } catch { error = tr("无法更改登录项，请检查系统设置。", "Could not update Login Items. Check System Settings.") }
+        } catch { self.error = tr("无法更改登录项，请检查系统设置。", "Could not update Login Items. Check System Settings.") }
     }
 }
