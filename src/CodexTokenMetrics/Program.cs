@@ -146,6 +146,19 @@ internal sealed class MetricsMonitor(string home, string? selectedThread, Func<D
         }
         var choices = _sessions;
         if (choice is not null && !choices.Any(s => s.Id == choice.Id)) choices = [choice, .. choices];
+        if (desktop?.LocalThreads is { Length: > 0 } reported)
+        {
+            // Active Desktop candidates must remain selectable even when their
+            // log files are older than the 40-file recent-activity scan.
+            var active = reported.Take(40).Select(id =>
+            {
+                var known = _sessions.FirstOrDefault(s => s.Id == id);
+                if (known is not null) return known;
+                var row = StateDatabase.TryReadThread(_database, id);
+                return new SessionChoice(id, row?.Title ?? id, "", DateTime.MinValue);
+            }).ToList();
+            choices = [.. active, .. choices.Where(s => !active.Any(a => a.Id == s.Id))];
+        }
         var basis = new MetricsSnapshot
         {
             ThemeKind = _theme.Current.ToString().ToLowerInvariant(),
@@ -204,7 +217,7 @@ internal sealed class MetricsMonitor(string home, string? selectedThread, Func<D
                 if (!doc.RootElement.TryGetProperty("type", out var type) || type.GetString() != "session_meta") continue;
                 var payload = doc.RootElement.GetProperty("payload");
                 var id = payload.GetProperty("id").GetString();
-                if (string.IsNullOrWhiteSpace(id)) continue;
+                if (string.IsNullOrWhiteSpace(id) || result.Any(s => s.Id == id)) continue;
                 var row = StateDatabase.TryReadThread(_database, id);
                 // Archived/CLI sessions may still appear in the chooser. The mode
                 // never claims it identifies the foreground Desktop conversation.

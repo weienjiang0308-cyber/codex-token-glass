@@ -62,6 +62,20 @@ internal static class DesktopIpcTests
         check(monitor.Read().SelectionMode == "desktopRemote" && monitor.Read().InputTokens is null, "remote-only route never reads a local fallback");
         observed = new(true, true, 1, 0, C, null);
         check(monitor.Read().InputTokens is null, "missing observed rollout never displays another session's usage");
+        var archivedAgeLog = Path.Combine(home, "sessions", "database-selected.jsonl");
+        File.SetLastWriteTimeUtc(archivedAgeLog, DateTime.UnixEpoch);
+        for (var i = 0; i < 41; i++)
+        {
+            var id = Guid.NewGuid().ToString();
+            File.WriteAllText(Path.Combine(home, "sessions", $"recent-{i}.jsonl"),
+                JsonSerializer.Serialize(new { type = "session_meta", payload = new { id } }) + "\n");
+        }
+        observed = new(true, true, 2, 0, null, null, [A, B]);
+        var candidates = new MetricsMonitor(home, null, () => observed).Read();
+        using (var choices = JsonDocument.Parse(JsonSerializer.Serialize(candidates, Program.Json)))
+            check(choices.RootElement.GetProperty("sessions").EnumerateArray().Any(x =>
+                x.GetProperty("id").GetString() == A && x.GetProperty("title").GetString() == "Synthetic database title"),
+                "older Desktop candidates remain in the chooser beyond the recent-file limit");
         Frames(check).GetAwaiter().GetResult();
         Transport(check).GetAwaiter().GetResult();
         check(DesktopIpcClient.Endpoints(Path.Combine(home, "custom-profile")).Count == 1, "custom profiles do not use a global legacy endpoint");
@@ -96,11 +110,13 @@ internal static class DesktopIpcTests
     {
         var temp = Path.Combine(Path.GetTempPath(), "ctg-ipc-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(temp);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var endpoint = Path.Combine(temp, "s");
         try
         {
             using var server = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             server.Bind(new UnixDomainSocketEndPoint(endpoint)); server.Listen(2);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(endpoint, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             await using var client = new DesktopIpcClient(() => [endpoint]); client.Start();
             using (var peer = await server.AcceptAsync().WaitAsync(TimeSpan.FromSeconds(5)))
             using (var stream = new NetworkStream(peer, false))

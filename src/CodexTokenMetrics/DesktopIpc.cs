@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace CodexTokenMetrics;
 
-internal sealed record DesktopRoute(bool Connected, bool Settled, int LocalCount, int RemoteCount, string? ThreadId, string? ErrorCode)
+internal sealed record DesktopRoute(bool Connected, bool Settled, int LocalCount, int RemoteCount, string? ThreadId, string? ErrorCode, string[]? LocalThreads = null)
 {
     public static readonly DesktopRoute Offline = new(false, false, 0, 0, null, null);
 }
@@ -33,11 +33,11 @@ internal sealed class DesktopRouteState(Func<long>? clock = null)
     {
         lock (_sync)
         {
-            var local = _following.Where(x => x.Host == "local").Select(x => x.Thread).Distinct().ToArray();
+            var local = _following.Where(x => x.Host == "local").Select(x => x.Thread).Distinct().Order(StringComparer.Ordinal).ToArray();
             var remote = _following.Where(x => x.Host != "local").Select(x => (x.Host, x.Thread)).Distinct().Count();
             var settled = _connected && _error is null && _clock() - _changed >= SettleMs;
             return new(_connected, settled, local.Length, remote,
-                settled && local.Length == 1 && remote == 0 ? local[0] : null, _error);
+                settled && local.Length == 1 && remote == 0 ? local[0] : null, _error, local);
         }
     }
 
