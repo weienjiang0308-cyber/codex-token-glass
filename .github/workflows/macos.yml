@@ -1,0 +1,32 @@
+name: macOS preview
+on:
+  push:
+    branches: [main, 'feat/macos-*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            rid: osx-arm64
+          - os: macos-26-intel
+            rid: osx-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build shared metrics and native SwiftUI app
+        run: bash mac/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexTokenGlass-${{ matrix.rid }}-preview
+          path: mac-dist/${{ matrix.rid }}/
+          if-no-files-found: error
