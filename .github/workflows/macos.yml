@@ -1,13 +1,13 @@
 name: macOS preview
 on:
   push:
-    branches: [main, 'feat/macos-*']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: macos-preview-${{ github.head_ref || github.ref_name }}
+  group: macos-preview-pr-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
   macos:
