@@ -93,7 +93,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             strip.frame = NSRect(x: 0, y: 0, width: 1240, height: 176)
             view = strip
         } else { view = host }
-        window.contentView = view; window.setContentSize(view.frame.size)
+        let captureSize = variant.1 == "strip" ? NSSize(width: 1240, height: 176) : NSSize(width: 1640, height: 3040)
+        window.setContentSize(captureSize)
+        window.contentView = view
+        view.setFrameSize(captureSize)
         window.appearance = NSAppearance(named: variant.2 == "dark" ? .darkAqua : .aqua)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
             view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
