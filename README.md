@@ -8,9 +8,19 @@
 
 基于 [dongyue-19/codex-statusbar](https://github.com/dongyue-19/codex-statusbar) 修改，保留上游 MIT 许可及署名。图形材质使用 [LiquidGlass](https://github.com/shayann07/liquidglass)，不是 Apple 官方组件或原生 iOS API。
 
-![用合成数据渲染的界面示例](assets/demo-synthetic.png)
+## 高清界面预览
 
-*演示使用合成计数和绘制的背景，不是作者的真实会话或桌面。*
+[查看全部 39 张高清原图：中英 / 明暗 / 状态条 / 详情 / 设置 / 菜单](docs/SCREENSHOTS.md)
+
+<table>
+<tr><th>Windows 用量详情</th><th>Windows 设置</th></tr>
+<tr><td><a href="https://raw.githubusercontent.com/weienjiang0308-cyber/codex-token-glass/main/assets/screenshots/windows/windows-details-light-zh.png"><img src="assets/screenshots/windows/windows-details-light-zh.png" width="390" alt="Windows 中文用量详情，4倍原图"></a></td><td><a href="https://raw.githubusercontent.com/weienjiang0308-cyber/codex-token-glass/main/assets/screenshots/windows/windows-settings-light-zh.png"><img src="assets/screenshots/windows/windows-settings-light-zh.png" width="390" alt="Windows 中文设置，4倍原图"></a></td></tr>
+<tr><th>macOS 预览：用量详情</th><th>macOS 预览：设置</th></tr>
+<tr><td><a href="https://raw.githubusercontent.com/weienjiang0308-cyber/codex-token-glass/main/assets/screenshots/macos/macos-details-dark-en.png"><img src="assets/screenshots/macos/macos-details-dark-en.png" width="390" alt="Mac 英文深色详情，4倍原图"></a></td><td><a href="https://raw.githubusercontent.com/weienjiang0308-cyber/codex-token-glass/main/assets/screenshots/macos/macos-settings-dark-en.png"><img src="assets/screenshots/macos/macos-settings-dark-en.png" width="390" alt="Mac 英文深色设置，4倍原图"></a></td></tr>
+</table>
+
+*全部使用合成数据与背景，未截取真实会话或桌面。Windows 设置原图 2208×2920；Mac 详情和设置原图 1640×3040。点击图片查看原始 PNG。Mac 界面属于[独立移植预览](https://github.com/weienjiang0308-cyber/codex-token-glass/pull/1)。*
+
 
 ## 功能
 
