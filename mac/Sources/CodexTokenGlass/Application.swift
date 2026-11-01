@@ -3,11 +3,6 @@ import SwiftUI
 import Combine
 import CoreGraphics
 
-@MainActor
-private final class GalleryWindow: NSWindow {
-    override var backingScaleFactor: CGFloat { 4 }
-}
-
 @main
 enum Application {
     @MainActor static func main() {
@@ -55,11 +50,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--enable-login") { model.setLogin(true) }
         if CommandLine.arguments.contains("--smoke-test") {
             // Layout both screens with synthetic data; never inspect runner accounts.
-            let host = NSHostingView(rootView: DetailView(model: model).environment(\.displayScale, 4))
-            host.frame = NSRect(x: 0, y: 0, width: 410, height: ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] == nil ? 640 : 760)
+            let exporting = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] != nil
+            let host = NSHostingView(rootView: DetailView(model: model)
+                .scaleEffect(exporting ? 4 : 1, anchor: .topLeading)
+                .frame(width: exporting ? 1640 : 410, height: exporting ? 3040 : 640, alignment: .topLeading))
+            host.frame = NSRect(x: 0, y: 0, width: exporting ? 1640 : 410, height: exporting ? 3040 : 640)
             host.layoutSubtreeIfNeeded()
             if let directory = ProcessInfo.processInfo.environment["CODEX_TOKEN_GLASS_PREVIEW_DIR"] {
-                let window = GalleryWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
                 window.title = "Synthetic preview"; window.contentView = host
                 window.center(); window.orderFrontRegardless()
                 exportPreview(index: 0, host: host, window: window, directory: URL(fileURLWithPath: directory))
@@ -90,17 +88,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.snapshot = variant.1 == "waiting" ? MetricsSnapshot() : .demo
         let view: NSView
         if variant.1 == "strip" {
-            let strip = NSHostingView(rootView: FloatingStrip(model: model).environment(\.displayScale, 4))
-            strip.frame = NSRect(x: 0, y: 0, width: 310, height: 44)
+            let strip = NSHostingView(rootView: FloatingStrip(model: model).frame(width: 310, height: 44)
+                .scaleEffect(4, anchor: .topLeading).frame(width: 1240, height: 176, alignment: .topLeading))
+            strip.frame = NSRect(x: 0, y: 0, width: 1240, height: 176)
             view = strip
         } else { view = host }
         window.contentView = view; window.setContentSize(view.frame.size)
-        view.viewDidChangeBackingProperties()
-        view.layer?.contentsScale = 4
+        window.appearance = NSAppearance(named: variant.2 == "dark" ? .darkAqua : .aqua)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
             view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * 4),
-                pixelsHigh: Int(view.bounds.height * 4), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width),
+                pixelsHigh: Int(view.bounds.height), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                 isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { fatalError("Preview bitmap unavailable") }
             bitmap.size = view.bounds.size
             view.cacheDisplay(in: view.bounds, to: bitmap)
