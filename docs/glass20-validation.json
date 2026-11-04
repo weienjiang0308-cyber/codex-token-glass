@@ -1,0 +1,44 @@
+{
+  "version": "1.0.0-rc3-glass.20",
+  "selfTests": 427,
+  "installedSha256": "5bd694c8b7b60f97924a6d301afa81d59fe75011b932a975257f33c4dcc84160",
+  "scope": "primary popup typography and settings repaint/capture lifecycle",
+  "nativeChecks": [
+    {
+      "mismatchedBoundaryPixels": 0,
+      "states": 6,
+      "tolerance": 2,
+      "clarity": 0
+    },
+    {
+      "mismatchedBoundaryPixels": 0,
+      "states": 6,
+      "tolerance": 2,
+      "clarity": 100
+    }
+  ],
+  "motion": [
+    {
+      "name": "context",
+      "inputs": 189,
+      "frames": 186,
+      "renderMedianMs": 4.683,
+      "renderP95Ms": 6.4612,
+      "frameGapP95Ms": 18.576999999582767,
+      "slowFrames": 0
+    },
+    {
+      "name": "clarity",
+      "inputs": 189,
+      "frames": 186,
+      "renderMedianMs": 4.8429,
+      "renderP95Ms": 5.6193,
+      "frameGapP95Ms": 19.053199999034405,
+      "slowFrames": 0
+    }
+  ],
+  "notes": [
+    "Initial expanded native probe timed out and was not counted as a pass. The probe now throws UI exceptions directly; both endpoint reruns completed all six states.",
+    "Metrics algorithms and statistics-page typography are unchanged."
+  ]
+}

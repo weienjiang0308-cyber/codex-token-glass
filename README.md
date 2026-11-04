@@ -6,7 +6,13 @@
 
 基于 [dongyue-19/codex-statusbar](https://github.com/dongyue-19/codex-statusbar) 修改，保留上游 MIT 许可及署名。图形材质使用 [LiquidGlass](https://github.com/shayann07/liquidglass)，不是 Apple 官方组件或原生 iOS API。
 
-## 最新源码更新（glass.19）
+## 最新界面修复（glass.20）
+
+一级菜单正文、数值和统计按钮适度加大。修复设置面板捕获旧菜单背景、透明重绘重复叠加及边缘层不同步的问题；避免设置与统计同时叠放。
+
+[glass.20 界面验证](docs/glass20-validation.json) · [完整审查报告](docs/ROUTING-SPEED-REVIEW.zh-CN.txt)
+
+## 测速与统计更新（glass.19）
 
 - 文本输出显示实时 `Speed`；命令、检索、工具、思考等阶段显示相应状态。无数据时不再铺满破折号，平均速度留在详情。
 - 对话检测独立运行，切换立即清理旧显示并按对话缓存数据；后台旧结果不能覆盖新页面。

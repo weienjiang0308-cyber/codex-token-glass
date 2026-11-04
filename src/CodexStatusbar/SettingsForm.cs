@@ -19,7 +19,6 @@ internal sealed class SettingsForm : Form
     private SoftWindowEdge? _smoothEdge;
     private bool _materialDirty=true;
     private bool _renderFromTimer;
-    private bool _edgeDirty=true;
     private bool _fullSurfaceDirty=true;
     private long _shownAt;
     private int? _pendingContextValue,_pendingClarityValue;
@@ -58,6 +57,7 @@ internal sealed class SettingsForm : Form
         TopMost = true;
         KeyPreview = true;
         AutoScaleMode = AutoScaleMode.Dpi;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
         var heading=AddLabel(CodexUi.T("用量设置", "Usage settings"),28,14,430,36,18,true);
         heading.TextAlign=ContentAlignment.MiddleLeft;
@@ -183,7 +183,7 @@ internal sealed class SettingsForm : Form
         if(_pendingClarityValue is int clarity)
         {
             _pendingClarityValue=null;CodexUi.PreviewGlassTransparency(clarity);
-            _glassValue.Text=$"{clarity}%";_edgeDirty=true;_fullSurfaceDirty=true;
+            _glassValue.Text=$"{clarity}%";_fullSurfaceDirty=true;
         }
     }
 
@@ -247,7 +247,7 @@ internal sealed class SettingsForm : Form
     {
         var palette = _currentPalette();
         if(_appliedPalette==palette)return;
-        _appliedPalette=palette;_edgeDirty=true;_fullSurfaceDirty=true;
+        _appliedPalette=palette;_fullSurfaceDirty=true;
         BackColor = palette.Background;
         ForeColor = palette.Value;
         foreach (Control child in Controls)
@@ -306,8 +306,9 @@ internal sealed class SettingsForm : Form
         _optics.PrepareClarityPreview(_materialFrame,palette.Background.GetBrightness()<.5);
         _optics.RenderInto(_materialFrame,palette.Background.GetBrightness()<.5);
         _materialDirty=false;
-        if(_edgeDirty || Environment.TickCount64-_shownAt<350)
-        {_smoothEdge?.Present(_materialFrame,32*u);_edgeDirty=false;}
+        // The fringe and native host must show the same frame, including the final
+        // release frame. Keeping an older alpha fringe leaves optical trails.
+        _smoothEdge?.Present(_materialFrame,32*u);
         if(MotionProbeActive)
         {
             ProbeRenderMs.Add((System.Diagnostics.Stopwatch.GetTimestamp()-started)*1000d/System.Diagnostics.Stopwatch.Frequency);
@@ -320,18 +321,26 @@ internal sealed class SettingsForm : Form
         EnsureMaterial();if(!_optics.Ready || _materialFrame is null)return false;
         // Copy the same pixel grid as the parent. DrawImage(sourceRect,destRect)
         // resamples the crop boundary and leaves a rectangular seam around round controls.
-        graphics.DrawImageUnscaled(_materialFrame,-control.Left,-control.Top);return true;
+        var composition=graphics.CompositingMode;
+        try{graphics.CompositingMode=CompositingMode.SourceCopy;graphics.DrawImageUnscaled(_materialFrame,-control.Left,-control.Top);}
+        finally{graphics.CompositingMode=composition;}
+        return true;
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         EnsureMaterial();
-        if(_optics.Ready && _materialFrame is not null)e.Graphics.DrawImageUnscaled(_materialFrame,0,0);
+        if(_optics.Ready && _materialFrame is not null)
+        {
+            var composition=e.Graphics.CompositingMode;
+            try{e.Graphics.CompositingMode=CompositingMode.SourceCopy;e.Graphics.DrawImageUnscaled(_materialFrame,0,0);}
+            finally{e.Graphics.CompositingMode=composition;}
+        }
         else base.OnPaintBackground(e);
     }
 
     protected override void OnShown(EventArgs e)
-    { base.OnShown(e);_shownAt=Environment.TickCount64;_smoothEdge??=new SoftWindowEdge(this);_edgeDirty=true;RefreshPalette();RefreshMaterial(); }
+    { base.OnShown(e);_shownAt=Environment.TickCount64;_smoothEdge??=new SoftWindowEdge(this);RefreshPalette();RefreshMaterial(); }
     protected override void OnLocationChanged(EventArgs e){base.OnLocationChanged(e);_smoothEdge?.Follow();}
     protected override void OnVisibleChanged(EventArgs e){base.OnVisibleChanged(e);if(!Visible)_smoothEdge?.Hide();}
     protected override void OnSizeChanged(EventArgs e)
@@ -441,6 +450,7 @@ internal sealed class GlassButton : Button
 
 internal class ContextSlider : Control
 {
+    protected override void OnPaintBackground(PaintEventArgs e) { }
     internal void ProbeDown(int x)=>OnMouseDown(new MouseEventArgs(MouseButtons.Left,1,x,Height/2,0));
     internal void ProbeMove(int x)=>OnMouseMove(new MouseEventArgs(MouseButtons.Left,0,x,Height/2,0));
     internal void ProbeUp(int x)=>OnMouseUp(new MouseEventArgs(MouseButtons.Left,1,x,Height/2,0));

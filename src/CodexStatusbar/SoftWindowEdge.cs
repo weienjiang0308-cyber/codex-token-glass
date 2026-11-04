@@ -22,6 +22,15 @@ internal sealed class SoftWindowEdge : Form
         if(!_host.Visible||_host.IsDisposed)return;
         Follow();if(!Visible)Show(_host);
         using var ring=BuildRing(frame,radius,3f*_host.DeviceDpi/96f);
+        // The native host already paints its region. Erase that exact binary region
+        // from the alpha fringe instead of blending a second copy over the same pixels.
+        if(_host.Region is { } hostRegion)
+        {
+            using var g=Graphics.FromImage(ring);
+            g.CompositingMode=System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+            using var clear=new SolidBrush(Color.Transparent);
+            g.FillRegion(clear,hostRegion);
+        }
         LayeredSurface.Present(this,ring);
     }
     internal static Bitmap BuildRing(Bitmap frame,float radius,float thickness)

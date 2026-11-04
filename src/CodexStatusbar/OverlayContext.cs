@@ -437,7 +437,9 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
 
     private void OpenStatistics()
     {
+        if(_settingsForm is { IsDisposed:false,Visible:true }){_settingsForm.Activate();return;}
         CollapseAndHide();
+        DwmFlushForSettings();
         if (_statisticsForm is null || _statisticsForm.IsDisposed)
             _statisticsForm = new StatisticsForm(_statistics, () => _lastSnapshot, () => CodexUi.Palette(_effectiveTheme));
         _statisticsForm.Show();
@@ -2643,14 +2645,25 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     private void ShowSettings()
     {
         if (_settingsForm is { IsDisposed: false }) { _settingsForm.Show(); _settingsForm.Activate(); return; }
+        var restoreStatistics=_statisticsForm is {IsDisposed:false,Visible:true};
+        if(restoreStatistics)_statisticsForm!.Hide();
         _interaction.CollapseForHostChange();
-        if (_currentTarget is not null) ApplyLayout(_currentTarget);
+        _form.Hide();
+        // Finish removing the first-level surface before the settings dialog captures
+        // its backdrop; otherwise it can permanently refract the previous menu.
+        DwmFlushForSettings();
         _settingsForm = new SettingsForm(() => CodexUi.Palette(_effectiveTheme), () => _lastSnapshot?.ContextWindowTokens);
         _settingsForm.ShowDialog();
         _settingsForm.Dispose();
         _settingsForm = null;
+        if(Volatile.Read(ref _disposed)!=0)return;
+        if(restoreStatistics && _statisticsForm is {IsDisposed:false})_statisticsForm.Show();
+        if (_currentTarget is not null) ApplyLayout(_currentTarget);
         _form.RestorePopupLayer();
     }
+
+    [DllImport("dwmapi.dll", EntryPoint="DwmFlush")]
+    private static extern int DwmFlushForSettings();
 
     private static string RouteStatusSuffix(ActiveThreadRouteStatus status)
     {

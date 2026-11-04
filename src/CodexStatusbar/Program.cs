@@ -133,7 +133,7 @@ internal static class Program
             return 0;
         }
 
-        if(args.Length>=2 && args[0]=="--settings-corner-probe") return SettingsCornerProbe.Run(args[1]);
+        if(args.Length>=2 && args[0]=="--settings-corner-probe") return SettingsCornerProbe.Run(args[1],args.Length>=3?int.Parse(args[2]):0);
         if (args.Length >= 3 && args[0] == "--resolve-title-json")
         {
             Console.WriteLine(JsonSerializer.Serialize(StateDatabase.TryReadUniqueDisplayName(args[1], args[2])));

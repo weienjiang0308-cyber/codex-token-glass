@@ -1436,6 +1436,10 @@ internal sealed class TokenStripForm : Form
         OverlayRenderMetrics metrics, OverlayRenderDecorationState decorations)
     {
         var layout=CurrentLayout!;
+        using var panelLabelFont=CodexUi.Font(11f*layout.ScalePercent/100f);
+        using var panelValueFont=CodexUi.Font(11.5f*layout.ScalePercent/100f);
+        using var panelButtonFont=CodexUi.Font(11.5f*layout.ScalePercent/100f,semibold:true);
+        labelFont=panelLabelFont;valueFont=panelValueFont;
         var bounds=layout.PanelBounds.ToRectangle();
         var unit=layout.Dpi/96d*layout.ScalePercent/100d;
         int D(int n)=>(int)Math.Round(n*unit);
@@ -1459,7 +1463,7 @@ internal sealed class TokenStripForm : Form
             using var outline = new Pen(Color.FromArgb(40, _palette.Value), 1);
             graphics.DrawPath(outline, shape);
         }
-        DrawAlignedText(graphics,CodexUi.T("统计", "Stats"),labelFont,StatisticsButtonBounds,_palette.Value,TextAlignment.Center,false);
+        DrawAlignedText(graphics,CodexUi.T("统计", "Stats"),panelButtonFont,StatisticsButtonBounds,_palette.Value,TextAlignment.Center,false);
 
         var heroWidth=(width-D(20))/2;
         DrawHero(graphics,_presentation.Primary,new Rectangle(left,bounds.Top+D(82),heroWidth,D(66)),labelFont,layout.ScalePercent);
@@ -1472,10 +1476,13 @@ internal sealed class TokenStripForm : Form
             var r=new Rectangle(x,chipTop,chipWidth,D(28));
             using var p=CreateRoundedRectanglePath(r,D(10));
             using var fill=new SolidBrush(Color.FromArgb(115,_palette.Background));graphics.FillPath(fill,p);
-            DrawAlignedText(graphics,CodexUi.T(chinese,english),labelFont,
-                new Rectangle(r.Left+D(10),r.Top,r.Width/3,r.Height),_palette.Label,TextAlignment.Near,false);
+            var caption=CodexUi.T(chinese,english);
+            var captionWidth=MeasureWidth(graphics,caption,labelFont);
+            var valueLeft=r.Left+D(10)+captionWidth+D(8);
+            DrawAlignedText(graphics,caption,labelFont,
+                new Rectangle(r.Left+D(10),r.Top,captionWidth,r.Height),_palette.Label,TextAlignment.Near,false);
             DrawAlignedText(graphics,metric.Value,valueFont,
-                new Rectangle(r.Left+r.Width/3,r.Top,r.Width*2/3-D(10),r.Height),_palette.Value,TextAlignment.Far,false);
+                new Rectangle(valueLeft,r.Top,Math.Max(0,r.Right-D(10)-valueLeft),r.Height),_palette.Value,TextAlignment.Far,false);
         }
         Chip(DisplayField.PeakSpeed,"峰值","Peak",left);
         Chip(DisplayField.Tps,_presentation.LiveReadingHeld?"上次文本":"实时估算",
@@ -1668,7 +1675,7 @@ internal sealed class TokenStripForm : Form
                 DataLabelColor,TextAlignment.Near,false);
         else
         {
-            using var smaller=CodexUi.FontForText(metric.ExpandedLabel,Math.Max(8.5f,labelFont.Size-1));
+            using var smaller=CodexUi.FontForText(metric.ExpandedLabel,Math.Max(9.5f,labelFont.Size-.5f));
             using var brush=new SolidBrush(DataLabelColor);
             using var wrap=new StringFormat{LineAlignment=StringAlignment.Center,Trimming=StringTrimming.None};
             graphics.DrawString(metric.ExpandedLabel,smaller,brush,new Rectangle(bounds.Left,bounds.Top,labelWidth,bounds.Height),wrap);
