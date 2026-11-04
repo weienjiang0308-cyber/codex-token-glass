@@ -40,7 +40,7 @@ internal sealed class StatisticsForm : Form
     {
         _service=service;_selection=selection;_theme=theme;_palette=theme();
         _optics.PanelRadiusDip=48;
-        Text="Statistics · 用量统计";FormBorderStyle=FormBorderStyle.None;
+        Text="Statistics · API 等值";FormBorderStyle=FormBorderStyle.None;
         AutoScaleMode=AutoScaleMode.None;ShowInTaskbar=true;TopMost=true;KeyPreview=true;
         StartPosition=FormStartPosition.Manual;BackColor=_palette.Background;
         var area=Screen.FromPoint(Cursor.Position).WorkingArea;
@@ -54,6 +54,8 @@ internal sealed class StatisticsForm : Form
         _buttons.Add(new("导出 JSON",new Rectangle(660,684,132,44),Export));
         _buttons.Add(new("刷新统计",new Rectangle(804,684,164,44),()=>{_service.RequestRefresh();_notice="已请求后台刷新";RequestFrame();}));
         _buttons.Add(new("关闭统计",new Rectangle(928,24,48,48),Close));
+        _buttons.Add(new("对话排行",new Rectangle(404,242,122,44),()=>SelectTab(3)));
+        _buttons.Add(new("每日对话",new Rectangle(528,242,122,44),()=>SelectTab(4)));
         _animation.Tick+=(_,_)=>{PaintFrame();if(!_optics.NeedsFrame)_animation.Stop();};
         _dataTimer.Tick+=(_,_)=>RefreshData();RefreshData();
     }
@@ -86,6 +88,8 @@ internal sealed class StatisticsForm : Form
         :"$"+t.KnownApiUsd.ToString(t.KnownApiUsd is >0 and <.01m?"0.0000":"0.00",CultureInfo.InvariantCulture)+(t.UnpricedResponses>0?" *":"");
     private static string Rate(UsageTotals t)=>t.CachePercent is double p?p.ToString("0.0",CultureInfo.InvariantCulture)+"%":"—";
     private static string Coverage(UsageTotals t)=>$"{t.Responses-t.UnpricedResponses}/{t.Responses}";
+    private bool SelectedTab(int index) => (index<3?index:index==7?3:index==8?4:-1)==_tab && !_definitions;
+    private string ThreadName(string id) => _state?.ThreadNames?.GetValueOrDefault(id) ?? OverlayPresentationBuilder.ShortThreadId(id);
     private void BuildRows()
     {
         _rows.Clear();var entries=_state?.Entries??Array.Empty<UsageEntry>();
@@ -101,10 +105,15 @@ internal sealed class StatisticsForm : Form
         }
         else if(_tab==1)
         {
-            _headings=["日期 · UTC 对齐","Token","数据来源"];
-            foreach(var d in _daily.OrderByDescending(x=>x.Date))_rows.Add([d.Date.ToString("yyyy-MM-dd"),N(d.Tokens),d.Source]);
+            _headings=["日期 · UTC","Token","API 等值 · USD","计价请求","数据来源"];
+            var byDay=entries.GroupBy(e=>DateOnly.FromDateTime(e.At.UtcDateTime)).ToDictionary(g=>g.Key,g=>UsageTotals.Sum(g));
+            foreach(var d in _daily.OrderByDescending(x=>x.Date))
+            {
+                var cost=byDay.GetValueOrDefault(d.Date);
+                _rows.Add([d.Date.ToString("yyyy-MM-dd"),N(d.Tokens),cost is null?"无模型明细":Price(cost),cost is null?"无本机记录":Coverage(cost),d.Source+" · 费用按本机"]);
+            }
         }
-        else
+        else if(_tab==2)
         {
             _headings=["本对话模型","Token","缓存率","API 等值 · USD","计价请求","价格核对"];
             foreach(var group in thread.GroupBy(x=>x.Model))
@@ -114,6 +123,18 @@ internal sealed class StatisticsForm : Form
                     ? (p.BuiltIn?"备用 ":"")+p.CheckedAt.ToLocalTime().ToString("MM-dd HH:mm") : "未知";
                 _rows.Add([group.Key,N(t.Total),Rate(t),Price(t),Coverage(t),stamp]);
             }
+        }
+        else if(_tab==3)
+        {
+            _headings=["对话","Token","缓存率","API 等值 · USD","计价请求","最近使用 · UTC"];
+            foreach(var row in UsageBreakdown.ByThread(entries))
+                _rows.Add([ThreadName(row.Thread),N(row.Usage.Total),Rate(row.Usage),Price(row.Usage),Coverage(row.Usage),row.LastDate.ToString("MM-dd")]);
+        }
+        else
+        {
+            _headings=["日期 · UTC","对话","Token","API 等值 · USD","缓存率","计价请求"];
+            foreach(var row in UsageBreakdown.ByDayAndThread(entries))
+                _rows.Add([row.Date.ToString("MM-dd"),ThreadName(row.Thread),N(row.Usage.Total),Price(row.Usage),Rate(row.Usage),Coverage(row.Usage)]);
         }
         _scroll=Math.Clamp(_scroll,0,Math.Max(0,_rows.Count-5));
     }
@@ -128,23 +149,27 @@ internal sealed class StatisticsForm : Form
     {
         var bitmap=new Bitmap(Width,Height,PixelFormat.Format32bppPArgb);bitmap.SetResolution(96,96);
         _optics.ReadingSurfaces((Physical(Sheet),20*_scale,Color.FromArgb(GlassAppearance.ReadingPlateAlpha(CodexUi.GlassTransparency),_palette.Background)));
-        for(int i=0;i<_buttons.Count;i++)_optics.Control(i,Physical(_buttons[i].Bounds),_buttons[i].Bounds.Height*_scale/2,_hover==i,_pressed==i,i==_tab&&!_definitions);
+        for(int i=0;i<_buttons.Count;i++)_optics.Control(i,Physical(_buttons[i].Bounds),_buttons[i].Bounds.Height*_scale/2,_hover==i,_pressed==i,SelectedTab(i));
         var optical=_optics.RenderInto(bitmap,_palette.Background.GetBrightness()<.5);
         using var g=Graphics.FromImage(bitmap);g.ScaleTransform(_scale,_scale);g.SmoothingMode=SmoothingMode.AntiAlias;
         g.PixelOffsetMode=PixelOffsetMode.HighQuality;g.TextRenderingHint=TextRenderingHint.AntiAliasGridFit;
         if(!optical){Fill(g,new Rectangle(0,0,CanvasWidth,CanvasHeight),48,_palette.Background);Fill(g,Sheet,20,CodexUi.Mix(_palette.Background,_palette.Value,.035));}
-        TextAt(g,"用量统计",32,28,700,38,25,true);TextAt(g,"Statistics  /  当前对话与账户用量",33,72,760,24,13,false,true);
-        var today=DateOnly.FromDateTime(DateTime.UtcNow);long Period(DateOnly start)=>_daily.Where(x=>x.Date>=start).Sum(x=>x.Tokens);
-        Hero(g,32,"本对话 · API 等值（USD）",Price(_thread),$"Standard  ·  已计价 {Coverage(_thread)} 个请求");
-        Hero(g,370,"本周 Token · 暂计",Short(Period(UsageMerge.Monday(today))),$"{UsageMerge.Monday(today):MM-dd} 周一至今");
-        Hero(g,685,"本月 Token · 暂计",Short(Period(new DateOnly(today.Year,today.Month,1))),$"{today:MM} 月 01 日至今");
+        TextAt(g,"API 等值",32,28,700,38,21,true);TextAt(g,"Statistics  /  对话、每日用量与 API 等值",33,72,760,24,13,false,true);
+        var today=DateOnly.FromDateTime(DateTime.UtcNow);
+        var all=_state?.Entries??Array.Empty<UsageEntry>();
+        var todayUsage=UsageTotals.Sum(all.Where(e=>DateOnly.FromDateTime(e.At.UtcDateTime)==today));
+        var totalUsage=UsageTotals.Sum(all);
+        var monthUsage=UsageTotals.Sum(all.Where(e=>e.At.UtcDateTime.Year==today.Year && e.At.UtcDateTime.Month==today.Month));
+        Hero(g,32,"本月 API 等值（USD）",Price(monthUsage),monthUsage.Responses>monthUsage.UnpricedResponses?$"本月已薅 OpenAI {Price(monthUsage)} 的 API 等值":"本月暂无可计价记录");
+        Hero(g,370,"今日 API 等值（USD）",Price(todayUsage),$"累计 {Price(totalUsage)} · 月度汇总自动存本机");
+        Hero(g,685,"本对话 · API 等值（USD）",Price(_thread),$"本机累计 · 已计价 {Coverage(_thread)} 个请求");
         using(var line=new Pen(Color.FromArgb(25,_palette.Value),1)){g.DrawLine(line,350,126,350,207);g.DrawLine(line,663,126,663,207);}
         for(int i=0;i<_buttons.Count;i++)DrawButton(g,i,optical);
         if(_definitions)DrawDefinitions(g);else DrawTable(g);
         var last=_state?.OfficialDays.Count>0?_state.OfficialDays.Keys.Max().ToString("MM-dd"):"未连接";
         var local=_state?.LocalFetched.ToLocalTime().ToString("HH:mm:ss")??"读取中";
         TextAt(g,_state?.Error??_notice??$"官方历史截至 {last}   ·   本机更新 {local}   ·   当日数据暂计",33,638,934,22,12,false,true);
-        TextAt(g,"Standard API 等值，非账单 · "+(_state?.PriceStatus??"官方价格待核对")+" · UTC 暂估 · * 部分计价",33,661,934,19,11,false,true);
+        TextAt(g,"Standard API 等值 · 月度统计存本机 · "+(_state?.PriceStatus??"官方价格待核对")+" · UTC 暂估 · * 部分计价",33,661,934,19,11,false,true);
         return bitmap;
     }
     internal Bitmap Preview(float scale, int tab = 0)
@@ -164,21 +189,21 @@ internal sealed class StatisticsForm : Form
         _tab=tab;BuildRows();return DrawFrame();
     }
     private void Hero(Graphics g,int x,string label,string value,string detail)
-    {TextAt(g,label,x,118,290,23,13,false,true);TextAt(g,value,x,147,292,48,value.Length>12?30:38,true);TextAt(g,detail,x,201,292,20,12,false,true);}
+    {TextAt(g,label,x,118,290,23,14,false,true);TextAt(g,value,x,147,292,48,value.Length>12?24:28,true);TextAt(g,detail,x,201,292,20,13,false,true);}
     private void DrawButton(Graphics g,int i,bool optical)
     {
-        var b=_buttons[i];bool selected=i==_tab&&!_definitions;
+        var b=_buttons[i];bool selected=SelectedTab(i);
         if(!optical)Fill(g,b.Bounds,b.Bounds.Height/2,selected?_palette.Value:CodexUi.Mix(_palette.Background,_palette.Value,_hover==i?.09:.045));
         var color=selected?_palette.Background:_palette.Value;
         if(i==6){using var p=new Pen(color,1.8f){StartCap=LineCap.Round,EndCap=LineCap.Round};var x=b.Bounds.Left+24;var y=b.Bounds.Top+24;g.DrawLine(p,x-6,y-6,x+6,y+6);g.DrawLine(p,x+6,y-6,x-6,y+6);}
-        else TextAt(g,i==3&&_definitions?"返回明细":b.Text,b.Bounds.X,b.Bounds.Y,b.Bounds.Width,b.Bounds.Height,13,selected,false,StringAlignment.Center,color);
+        else TextAt(g,i==3&&_definitions?"返回明细":b.Text,b.Bounds.X,b.Bounds.Y,b.Bounds.Width,b.Bounds.Height,14.5f,true,false,StringAlignment.Center,color);
         if(_focus==i){using var path=LayeredSurface.Round(RectangleF.Inflate(b.Bounds,-3,-3),b.Bounds.Height/2f-3);using var pen=new Pen(color,1.5f){DashStyle=DashStyle.Dot};g.DrawPath(pen,path);}
     }
     private void DrawTable(Graphics g)
     {
-        var weights=_tab switch{0=>new[]{1.05,1.12,1.12,1.12,.84,.64,.80,.74},1=>new[]{1.0,1.1,1.4},_=>new[]{1.5,1.15,.65,1.0,.65,1.0}};
+        var weights=_tab switch{0=>new[]{1.05,1.12,1.12,1.12,.84,.64,.80,.74},1=>new[]{.9,1.0,1.2,.8,1.5},3=>new[]{2.2,1.1,.6,1.1,.7,.9},4=>new[]{.65,2.2,1.1,1.1,.65,.7},_=>new[]{1.5,1.15,.65,1.0,.65,1.0}};
         var sum=weights.Sum();var x=40f;
-        for(int c=0;c<_headings.Length;c++){var w=(float)(920*weights[c]/sum);TextAt(g,_headings[c],x+8,310,w-16,32,11.5f,true,true);x+=w;}
+        for(int c=0;c<_headings.Length;c++){var w=(float)(920*weights[c]/sum);TextAt(g,_headings[c],x+8,310,w-16,32,13,true,true);x+=w;}
         using(var line=new Pen(Color.FromArgb(22,_palette.Value),1))g.DrawLine(line,48,344,952,344);
         var saved=g.Save();g.SetClip(TableViewport);
         if(_state is null)TextAt(g,"正在后台读取用量…",48,375,880,40,15,false,true);
@@ -186,18 +211,18 @@ internal sealed class StatisticsForm : Form
         for(int r=_scroll;r<Math.Min(_rows.Count,_scroll+6);r++)
         {
             var y=347+(r-_scroll)*50;if(r==1&&_tab==0)Fill(g,new Rectangle(40,y+3,920,44),12,Color.FromArgb(20,_palette.Value));x=40;
-            for(int c=0;c<_headings.Length;c++){var w=(float)(920*weights[c]/sum);TextAt(g,_rows[r][c],x+8,y,w-16,50,11.5f,c==6&&_tab==0);x+=w;}
+            for(int c=0;c<_headings.Length;c++){var w=(float)(920*weights[c]/sum);TextAt(g,_rows[r][c],x+8,y,w-16,50,13.5f,c==6&&_tab==0);x+=w;}
             if(r+1<_rows.Count)using(var line=new Pen(Color.FromArgb(13,_palette.Value),1))g.DrawLine(line,48,y+49,952,y+49);
         }
         g.Restore(saved);
         if(_rows.Count>5){var h=Math.Max(24,252*5/_rows.Count);var y=352+(252-h)*_scroll/Math.Max(1,_rows.Count-5);Fill(g,new Rectangle(967,y,3,h),2,Color.FromArgb(100,_palette.Value));}
     }
-    private string Definitions=>"统计范围\n本轮为当前这一轮请求；整个对话不含独立子对话。本机统计不含其他设备和已删除日志。\n\n"
+    private string Definitions=>"羊毛口径\n“羊毛”指按官方 API 单价折算的使用价值，不是现金收入或扣除订阅费后的净节省。费用仅包含本机有模型/缓存明细的请求，无法给官方仅有总 Token 的历史凭空计价。\n\n统计范围\n本轮为当前这一轮请求；整个对话不含独立子对话。本机统计不含其他设备和已删除日志。\n\n"
         +"历史与今天\n官方历史日桶替换同日本机数，不相加。未返回的日期用本机暂计；官方没有时区字段，暂按 UTC 对齐。\n\n"
         +"Token 与费用\n总量 = 输入 + 输出。缓存是输入子集，推理是输出子集。按记录中的模型和最新核对的官方 Standard 单价逐请求折算，含长上下文规则；非套餐账单。价格每小时核对，新模型立即查询；失败用注明时间的缓存，未知模型不猜价。\n\n"
         +$"当前会话 ID  {_selected?.ThreadId??"未选择"}\n读取异常 {_state?.ReadErrors??0} · 旧格式文件 {_state?.LegacyFiles??0}（旧格式可能不完整）";
     private void DrawDefinitions(Graphics g)
-    {using var font=CodexUi.FontForText("中文",10);using var brush=new SolidBrush(_palette.Value);g.DrawString(Definitions,font,brush,new RectangleF(48,318,900,300));}
+    {using var font=CodexUi.FontForText("中文",10.5f);using var brush=new SolidBrush(_palette.Value);g.DrawString(Definitions,font,brush,new RectangleF(48,318,900,300));}
     private void TextAt(Graphics g,string text,float x,float y,float w,float h,float size,bool bold=false,bool muted=false,StringAlignment align=StringAlignment.Near,Color? color=null)
     {
         using var font=CodexUi.FontForText(text,size*72/96,bold);using var brush=new SolidBrush(color??(muted?CodexUi.Mix(_palette.Background,_palette.Value,.82):_palette.Value));

@@ -16,7 +16,9 @@ public sealed class LiveSpeedDisplay
         {
             _thread = reading.ThreadId; _turn = reading.TurnId; _lastOutput = null; _lastRate = null; _displaySecond = -1;
         }
+        if (reading.ToolRunning && reading.Activity != "generating" && _lastRate.HasValue) return (_lastRate, true);
         if (reading.LiveConnected && reading.LastOutputAtMs is long at && at != _lastOutput &&
+            (_lastRate is null || monotonicMs - at <= 1000) &&
             monotonicMs / 1000 != _displaySecond &&
             reading.LiveEstimateTps is > 0 && double.IsFinite(reading.LiveEstimateTps.Value))
         { _lastOutput = at; _lastRate = reading.LiveEstimateTps; _displaySecond = monotonicMs / 1000; }

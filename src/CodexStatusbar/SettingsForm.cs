@@ -66,8 +66,8 @@ internal sealed class SettingsForm : Form
         close.AccessibleName = CodexUi.T("关闭设置", "Close settings");
         close.Click += (_, _) => Close();
         AddLabel(CodexUi.T("跟随 Codex 的外观，让指标和设置保持一致。", "A quieter view of your tokens, in Codex's own colors."), 29, 64, 494, 24, 9.5f, false, true);
-        AddLabel(CodexUi.T("上下文窗口", "Context window"), 28, 115, 320, 25, 11, true);
-        AddLabel(_initial.Model, 28, 146, 280, 22, 9.5f, false, true);
+        AddLabel(CodexUi.T("全局上下文窗口", "Global context window"), 28, 115, 320, 25, 11, true);
+        AddLabel(CodexUi.T("修改 Codex 全局配置，不绑定单个模型。", "Global Codex configuration, independent of the selected model."), 28, 146, 494, 24, 10.5f, false, true);
         _window = new NumericUpDown
         {
             Minimum = 32_000, Maximum = ContextConfiguration.SliderMaximum, Increment = 10_000,
@@ -193,14 +193,12 @@ internal sealed class SettingsForm : Form
 
     private void UpdateContextInfo()
     {
-        var total = Math.Min((long)_window.Value, _initial.CatalogMaximum ?? (long)_window.Value);
-        var usable = total * _initial.EffectivePercent / 100;
         var live = _getLiveContext();
-        var status = live == usable ? CodexUi.T("已应用", "applied") : CodexUi.T("待应用", "pending");
-        var display = live?.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) ?? CodexUi.T("等待连接", "waiting");
+        var display = live?.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) ?? CodexUi.T("暂无记录", "not recorded");
         _contextInfo.Text = CodexUi.T(
-            $"总窗口 {_window.Value:N0}；Codex 保留 {100 - _initial.EffectivePercent}% 余量。\n按此设置预计可用 {usable:N0}。\n最近调用记录：{display}（{status}）。\n重载后发送一条消息，实际运行记录才会更新。",
-            $"Total window: {_window.Value:N0}. Codex reserves {100 - _initial.EffectivePercent}%.\nExpected usable window: {usable:N0}.\nLast recorded usable window: {display} ({status}).\nAfter reloading, send a message to refresh the runtime record.");
+            $"全局配置：{_window.Value:N0} token。\n自动压缩阈值：{CompactAt:N0} token。\n当前对话报告窗口：{display}（仅供参考）。\n模型上限及预留空间另行生效；重载后新请求采用配置。",
+            $"Global setting: {_window.Value:N0} tokens.\nCompaction threshold: {CompactAt:N0} tokens.\nCurrent chat reports: {display} (reference only).\nModel limits and reserves still apply. Reload for new requests.");
+
     }
 
     private void ApplyChanges(bool restore)
@@ -224,7 +222,7 @@ internal sealed class SettingsForm : Form
     {
         var label = new GlassLabel { Text = text, Bounds = new Rectangle(x, y, width, height),
             UseCompatibleTextRendering = true,
-            Font = CodexUi.FontForText(text, Math.Max(10,size), semibold: bold),
+            Font = CodexUi.FontForText(text, Math.Max(10.5f,size), semibold: bold),
             ForeColor = muted ? CodexUi.Mix(_palette.Background,_palette.Value,.82) : _palette.Value, BackColor = Color.Transparent,
             Tag = muted ? "muted" : "text" };
         Controls.Add(label); return label;
@@ -234,12 +232,14 @@ internal sealed class SettingsForm : Form
     {
         var button = new GlassButton { Text = text, Bounds = new Rectangle(x, y, width, 36),
             FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, UseVisualStyleBackColor = false,
-            Font = CodexUi.FontForText(text, 10.5f, semibold: primary),
+            Font = CodexUi.FontForText(text, 11.5f, semibold: true),
             ForeColor = primary ? _palette.Background : _palette.Value,
             BackColor = primary ? _palette.Value : _palette.Background,
             Tag = primary ? "primary" : "secondary" };
         button.FlatAppearance.BorderColor = _palette.Border;
-        button.FlatAppearance.BorderSize = primary ? 0 : 1;
+        // The optical frame already contains the complete button surface. A native
+        // flat-button border is rectangular and becomes visible around the round lens.
+        button.FlatAppearance.BorderSize = 0;
         Controls.Add(button); return button;
     }
 
@@ -318,7 +318,9 @@ internal sealed class SettingsForm : Form
     internal bool DrawControlMaterial(Control control,Graphics graphics)
     {
         EnsureMaterial();if(!_optics.Ready || _materialFrame is null)return false;
-        graphics.DrawImage(_materialFrame,control.ClientRectangle,control.Bounds,GraphicsUnit.Pixel);return true;
+        // Copy the same pixel grid as the parent. DrawImage(sourceRect,destRect)
+        // resamples the crop boundary and leaves a rectangular seam around round controls.
+        graphics.DrawImageUnscaled(_materialFrame,-control.Left,-control.Top);return true;
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)
@@ -389,6 +391,7 @@ internal sealed class GlassButton : Button
     internal bool MaterialPressed=>_pressed;
     private void MaterialChanged(){Invalidate();if(Parent is SettingsForm form)form.RefreshMaterial();}
     public GlassButton() => SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    protected override void OnPaintBackground(PaintEventArgs e) { }
     protected override void OnMouseEnter(EventArgs e) { _hovered = true; MaterialChanged(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { _hovered = false; MaterialChanged(); base.OnMouseLeave(e); }
     protected override void OnMouseDown(MouseEventArgs e){if(e.Button==MouseButtons.Left){_pressed=true;MaterialChanged();}base.OnMouseDown(e);}

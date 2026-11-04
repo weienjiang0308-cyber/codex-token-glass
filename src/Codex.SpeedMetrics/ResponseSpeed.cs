@@ -17,7 +17,7 @@ public sealed record SpeedReading(
     double? LastResponseTps, long LastResponseOutputTokens, long LastResponseMilliseconds,
     double? PeakResponseTps, double? LiveEstimateTps, bool LiveConnected,
     long? LastOutputAtMs, bool PartialHistory,
-    string? LiveError = null, long LiveFrames = 0, long LiveTextUpdates = 0)
+    string? LiveError = null, long LiveFrames = 0, long LiveTextUpdates = 0, bool ToolRunning = false, string? Activity = null)
 {
     public string AverageCoverage => $"{TimedResponses}/{CompletedResponses}";
 }
@@ -279,11 +279,11 @@ public sealed class SpeedObserver : IDisposable
         file.ReadNew();
         var a = file.Analyzer;
         var live = _live.Read(threadId);
-        if (live.TurnId != a.TurnId) live = (null, live.Connected, null, live.TurnId);
+        if (live.TurnId != a.TurnId) live = (null, live.Connected, null, live.TurnId, false, "opening");
         return new SpeedReading(threadId, a.TurnId, a.Streaming, a.AverageTps, a.TimedTokens,
             a.TimedMilliseconds, a.TimedResponses, a.CompletedResponses, a.LastTps, a.LastTokens,
             a.LastMilliseconds, a.PeakTps, live.Tps, live.Connected,
-            live.LastOutputAtMs, a.PartialHistory, _live.LastError, _live.FramesReceived, _live.TextUpdates);
+            live.LastOutputAtMs, a.PartialHistory, _live.LastError, _live.FramesReceived, _live.TextUpdates, live.ToolRunning, live.Activity);
     }
     public void Dispose() => _live.Dispose();
 }

@@ -7,7 +7,7 @@ namespace CodexStatusbar;
 
 internal sealed record StatisticsSnapshot(IReadOnlyList<UsageEntry> Entries,
     IReadOnlyDictionary<DateOnly, long> OfficialDays, DateTimeOffset? OfficialFetched,
-    DateTimeOffset LocalFetched, string? Error, int ReadErrors, int LegacyFiles, string PriceStatus = "价格待核对");
+    DateTimeOffset LocalFetched, string? Error, int ReadErrors, int LegacyFiles, string PriceStatus = "价格待核对", IReadOnlyDictionary<string,string>? ThreadNames = null, IReadOnlyList<MonthlyApiValue>? Monthly = null);
 
 internal sealed class UsageStatisticsService : IDisposable
 {
@@ -60,9 +60,18 @@ internal sealed class UsageStatisticsService : IDisposable
         // Full history once, then appended bytes only. Independent of selected foreground conversation.
         try { _ledger.Refresh(_sessions); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { error = "本地日志暂不可读"; }
-        Current = new(_ledger.Entries, days, fetched, DateTimeOffset.UtcNow, error, _ledger.Errors, _ledger.LegacyFiles, _prices.Status);
+        var names=_ledger.Entries.Select(e=>e.Thread).Distinct().ToDictionary(id=>id,
+            id=>StateDatabase.TryReadDisplayThread(StateDatabase.ResolvePathForSessionsRoot(_sessions),id)?.Title ?? id);
+        Current = new(_ledger.Entries, days, fetched, DateTimeOffset.UtcNow, error, _ledger.Errors, _ledger.LegacyFiles, _prices.Status, names, Current?.Monthly);
         await _prices.Refresh(_ledger.Entries.Select(e => e.Model), force, token);
-        Current = Current with { PriceStatus = _prices.Status };
+        IReadOnlyList<MonthlyApiValue>? monthly=Current?.Monthly;
+        try
+        {
+            monthly=MonthlyApiArchive.Save(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CodexStatusbar","monthly-api-equivalent.json"),_ledger.Entries,DateOnly.FromDateTime(DateTime.UtcNow));
+        }
+        catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or JsonException){error="月度汇总暂未写入本机";}
+        Current = Current! with { PriceStatus = _prices.Status, Monthly=monthly, Error=error };
         if (DateTimeOffset.UtcNow >= _nextOfficial || force)
         {
             _nextOfficial = DateTimeOffset.UtcNow.AddMinutes(10);
@@ -81,7 +90,7 @@ internal sealed class UsageStatisticsService : IDisposable
                 error = "官方更新失败（" + ex.GetType().Name + "）；保留上次成功数据";
                 _nextOfficial = DateTimeOffset.UtcNow.AddMinutes(2);
             }
-            Current = new(_ledger.Entries, days, fetched, DateTimeOffset.UtcNow, error, _ledger.Errors, _ledger.LegacyFiles, _prices.Status);
+            Current = new(_ledger.Entries, days, fetched, DateTimeOffset.UtcNow, error, _ledger.Errors, _ledger.LegacyFiles, _prices.Status, names, monthly);
         }
     }
     internal static Dictionary<DateOnly, long> ReadDays(JsonElement result)

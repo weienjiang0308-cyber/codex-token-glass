@@ -7,9 +7,10 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
 {
     private readonly OverlaySettings _settings;
     private readonly CodexIpcActiveThreadMonitor _routeMonitor = new();
-    private readonly VisibleConversationResolver _visibleConversation = new();
-    private string? _visibleThread;
-    private long _visibleVersion;
+    private readonly VisibleConversationMonitor _visibleMonitor;
+    private readonly System.Windows.Forms.Timer _routeTimer = new(){Interval=100};
+    private readonly Dictionary<string,TokenSnapshot> _chatSnapshots = new(StringComparer.Ordinal);
+    private long _displayedVisibleVersion=-1;
     private readonly CodexProcessWatcher _watcher;
     private readonly LifecycleController _lifecycle;
     private readonly bool _background;
@@ -146,6 +147,8 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _positionDiagnostics = positionDiagnostics;
         _modeLabel = background ? "background" : "interactive";
         _sessionRoot = sessionRoot;
+        _visibleMonitor = new VisibleConversationMonitor(()=>_currentTarget?.HostWindow.Handle??0,StateDatabase.ResolvePathForSessionsRoot(sessionRoot));
+        _routeTimer.Tick+=(_,_)=>ApplyVisibleRoute();
         _statistics = new UsageStatisticsService(sessionRoot);
         _executablePath = StartupCommandLine.ResolveExecutablePath();
 
@@ -763,6 +766,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     private void AttachSubsystems(CodexProcessInfo info)
     {
         _routeMonitor.Start();
+        _visibleMonitor.Start();_routeTimer.Start();
         _monitor ??= CreateMonitor();
         _dockTracker.Enabled = _settings.PositionMode == OverlayPositionMode.ComposerContextLeft;
 
@@ -823,6 +827,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         EnsurePositionTimerState();
         _dockTracker.Enabled = false;
         _routeMonitor.Stop();
+        _visibleMonitor.Stop();_routeTimer.Stop();_displayedVisibleVersion=-1;
         _monitor?.Dispose();
         _monitor = null;
         CollapseAndHide();
@@ -1481,6 +1486,23 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         UpdateManualMenuState();
     }
 
+    private void ApplyVisibleRoute()
+    {
+        if(Volatile.Read(ref _disposed)!=0 || _monitor is null || _monitor.PinActiveSession)return;
+        var current=_visibleMonitor.Latest;
+        if(current.Version==_displayedVisibleVersion || current.Window!=(_currentTarget?.HostWindow.Handle??0))return;
+        _displayedVisibleVersion=current.Version;
+        _pendingThreadId=current.Route.ThreadId;
+        _pendingRouteStatus=_routeMonitor.GetStatus() with {ThreadId=current.Route.ThreadId,Version=current.Version};
+        _pendingSnapshot=current.Route.ThreadId is { } id && _chatSnapshots.TryGetValue(id,out var cached)
+            ?cached with{Title=current.Route.Title,Tps=null,TpsHeld=false,Activity="opening"}:null;
+        _lastSnapshot=_pendingSnapshot;
+        _observedSessionVersion=-1;_pendingSessionVersion=0;
+        _interaction.CollapseForHostChange();StopOutsideClickPolling();
+        RefreshPresentation();UpdateSessionMenuText();_dockTracker.RequestResync();
+        RequestBackgroundPoll();
+    }
+
     private void RequestBackgroundPoll()
     {
         if (Volatile.Read(ref _disposed) != 0
@@ -1503,28 +1525,28 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _ = Task.Run(() =>
             {
                 var ipc = _routeMonitor.GetStatus();
-                var visible = _visibleConversation.Read(window, StateDatabase.ResolvePathForSessionsRoot(_sessionRoot));
+                var sample = _visibleMonitor.Latest;
+                var visible = sample.Window==window ? sample.Route : new VisibleConversation(null,"","visible-unresolved");
                 if (!monitor.PinActiveSession) monitor.PreferredThreadId = visible.ThreadId;
                 var snapshot = monitor.Poll();
-                if (!monitor.PinActiveSession && visible.Title != _visibleConversation.ReadTitle(window))
-                {
-                    monitor.PreferredThreadId = null;
-                    snapshot = monitor.Poll();
-                    visible = new(null, "", "visible-unresolved");
-                }
-                if (_visibleThread != monitor.ActiveThreadId) { _visibleThread = monitor.ActiveThreadId; _visibleVersion++; }
                 if (snapshot is not null && !monitor.PinActiveSession)
                     snapshot = snapshot with { Title = visible.Title, Source = visible.Source };
-                var routeStatus = ipc with { ThreadId = monitor.ActiveThreadId, Version = _visibleVersion };
+                var routeStatus = ipc with { ThreadId = monitor.ActiveThreadId, Version = sample.Version };
                 return (Snapshot: snapshot, Version: monitor.ActiveSessionVersion,
-                    ThreadId: monitor.ActiveThreadId, RouteStatus: routeStatus, Window: window);
+                    ThreadId: monitor.ActiveThreadId, RouteStatus: routeStatus, Window: window, VisibleVersion: sample.Version);
             })
             .ContinueWith(task =>
             {
                 try
                 {
+                    if(task.Status == TaskStatus.RanToCompletion && task.Result.Snapshot is { } cached && !string.IsNullOrEmpty(cached.ThreadId))
+                    {
+                        _chatSnapshots[cached.ThreadId]=cached;
+                        if(_chatSnapshots.Count>32)_chatSnapshots.Remove(_chatSnapshots.Keys.First(k=>k!=cached.ThreadId));
+                    }
                     if (Volatile.Read(ref _disposed) == 0 && task.Status == TaskStatus.RanToCompletion
-                        && task.Result.Window == (_currentTarget?.HostWindow.Handle ?? 0))
+                        && task.Result.Window == (_currentTarget?.HostWindow.Handle ?? 0)
+                        && (monitor.PinActiveSession || task.Result.VisibleVersion == _visibleMonitor.Latest.Version))
                     {
                         _pendingSnapshot = task.Result.Snapshot;
                         _pendingSessionVersion = task.Result.Version;
@@ -1535,6 +1557,8 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
                 finally
                 {
                     Interlocked.Exchange(ref _pollInFlight, 0);
+                    if(Volatile.Read(ref _disposed)==0 && task.Status==TaskStatus.RanToCompletion
+                        && task.Result.VisibleVersion!=_visibleMonitor.Latest.Version)RequestBackgroundPoll();
                 }
             }, CancellationToken.None, TaskContinuationOptions.None, uiScheduler);
     }
@@ -2666,7 +2690,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             _interaction.CollapseForHostChange();
             _timer.Stop();
             _outsideClickTimer.Stop();
-            _timer.Dispose();
+            _timer.Dispose();_routeTimer.Dispose();_visibleMonitor.Dispose();
             _outsideClickTimer.Dispose();
             // Returns false while a WinEvent callback is on the stack; the hook is torn down either way,
             // and Dispose is the last thing that happens in this process.

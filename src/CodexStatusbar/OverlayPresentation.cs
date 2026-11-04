@@ -46,7 +46,7 @@ internal static class OverlayPresentationBuilder
     private const string Separator = " · ";
 
     /// <summary>The collapsed strip before any conversation is known.</summary>
-    public const string WaitingCapsuleText = "Speed — · Tokens — · Cache hit —";
+    public const string WaitingCapsuleText = "Connecting to chat";
 
     /// <summary>
     /// The strip's verbosity ladder, widest first. Level 0 is what the user sees at normal widths —
@@ -92,7 +92,7 @@ internal static class OverlayPresentationBuilder
             false,
             SanitizeSingleLine(statusText),
             WaitingCapsuleText,
-            [WaitingCapsuleText, "-- t/s"]);
+            [WaitingCapsuleText, "Connecting"]);
     }
 
     public static OverlayPresentation Create(
@@ -186,13 +186,18 @@ internal static class OverlayPresentationBuilder
     public static IReadOnlyList<string> BuildCapsuleVariants(TokenSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var live = snapshot.Tps is double rate ? rate.ToString("0.0", CultureInfo.InvariantCulture) : "--";
-        var total = snapshot.HasUsage ? MetricFormat.CompactTokens(snapshot.InputTokens + snapshot.OutputTokens) : "--";
-        var cache = snapshot.HasUsage ? MetricFormat.FormatCachePercentCompact(snapshot.InputTokens, snapshot.CachedInputTokens) : "--";
-        // The compact strip is live visible-text throughput; official response averages stay in details.
-        return [$"Speed {live} tok/s · Tokens {total} · Cache hit {cache}",
-            $"{live} tok/s · {total} tokens · Cache hit {cache}",
-            $"{live} t/s · {total} tok · Hit {cache}"];
+        var parts=new List<string>();
+        var status=snapshot.Activity switch { "command"=>"Command", "searching"=>"Searching", "tool"=>"Using tools",
+            "thinking"=>"Thinking", "opening"=>"Opening chat", "connecting"=>"Connecting", "ready"=>"Ready", "working"=>"Working", _=>null };
+        var speed=status ?? (snapshot.Tps is double rate && rate>0 ? $"Speed {rate.ToString("0.0",CultureInfo.InvariantCulture)} tok/s"
+            :snapshot.ToolRunning ? "Command" : snapshot.Streaming ? "Waiting for output" : "Ready");
+        parts.Add(speed);
+        if(snapshot.HasUsage)parts.Add("Tokens "+MetricFormat.CompactTokens(snapshot.InputTokens+snapshot.OutputTokens));
+        if(snapshot.InputTokens>0)parts.Add("Cache hit "+MetricFormat.FormatCachePercentCompact(snapshot.InputTokens,snapshot.CachedInputTokens));
+        var full=string.Join(" · ",parts);
+        var compact=full.Replace("Waiting for output","Waiting").Replace("Speed ","").Replace("Tokens ","").Replace("Cache hit ","Hit ");
+        return [full,compact,compact.Replace(" tok/s"," t/s")];
+
     }
 
     /// <summary>The widest variant — what the strip shows whenever there is room for it.</summary>

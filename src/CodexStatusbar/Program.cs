@@ -116,6 +116,24 @@ internal static class Program
     private static int Main(string[] args)
     {
         Codex.SpeedMetrics.HostTokenizer.Initialize();
+        if(args.Length>=3 && args[0]=="--visible-route-watch")
+        {
+            using var monitor=new VisibleConversationMonitor(()=>long.Parse(args[1]),StateDatabase.ResolvePath());monitor.Start();
+            var end=DateTime.UtcNow.AddSeconds(double.Parse(args[2]));long previous=-1;
+            while(DateTime.UtcNow<end){var sample=monitor.Latest;if(sample.Version!=previous){Console.WriteLine(JsonSerializer.Serialize(sample));Console.Out.Flush();previous=sample.Version;}Thread.Sleep(50);}
+            return 0;
+        }
+
+        if(args.Length>=2 && args[0]=="--statistics-demo")return StatisticsPublicDemo.Run(args[1]);
+        if(args.Length>=2 && args[0]=="--usage-record-json")
+        {
+            var reader=new RolloutReader(args[1]);reader.Initialize();var usage=reader.State;
+            Console.WriteLine(JsonSerializer.Serialize(new{usage.TotalTokens,usage.InputTokens,usage.OutputTokens,
+                usage.CachedInputTokens,CachePercent=usage.InputTokens>0?100d*usage.CachedInputTokens/usage.InputTokens:(double?)null}));
+            return 0;
+        }
+
+        if(args.Length>=2 && args[0]=="--settings-corner-probe") return SettingsCornerProbe.Run(args[1]);
         if (args.Length >= 3 && args[0] == "--resolve-title-json")
         {
             Console.WriteLine(JsonSerializer.Serialize(StateDatabase.TryReadUniqueDisplayName(args[1], args[2])));
@@ -340,7 +358,9 @@ internal sealed record TokenSnapshot(
     double? AverageTps = null,
     int TimedResponseCount = 0,
     int CompletedResponseCount = 0,
-    bool LiveEstimateConnected = false)
+    bool LiveEstimateConnected = false,
+    bool ToolRunning = false,
+    string? Activity = null)
 {
     public double? CacheHitPercent => MetricFormat.CacheHitPercent(InputTokens, CachedInputTokens);
 
@@ -1244,7 +1264,7 @@ internal sealed class TokenLogMonitor : IDisposable
         var turnElapsedMs = state?.TurnElapsedMs(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         signature += "|elapsed:" + (turnElapsedMs / 1000)?.ToString(CultureInfo.InvariantCulture);
         signature += "|speed:" + tps?.ToString("0.0", CultureInfo.InvariantCulture) + ":" +
-            speed?.AverageTps?.ToString("0.000", CultureInfo.InvariantCulture) + ":" + speed?.AverageCoverage + ":held:" + display.Held;
+            speed?.AverageTps?.ToString("0.000", CultureInfo.InvariantCulture) + ":" + speed?.AverageCoverage + ":held:" + display.Held + ":activity:" + speed?.Activity;
         if (signature == _cachedSignature && _lastSnapshot is not null)
         {
             return _lastSnapshot;
@@ -1300,7 +1320,8 @@ internal sealed class TokenLogMonitor : IDisposable
                 TpsState = display.Held ? "last-visible-text-reading-held" : "visible-text-estimate",
                 TimedResponseCount = speed.TimedResponses,
                 CompletedResponseCount = speed.CompletedResponses,
-                LiveEstimateConnected = speed.LiveConnected
+                LiveEstimateConnected = speed.LiveConnected,
+                ToolRunning = speed.ToolRunning, Activity = speed.Activity
             };
         return _lastSnapshot;
     }

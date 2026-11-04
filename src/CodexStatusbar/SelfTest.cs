@@ -878,7 +878,12 @@ internal static class SelfTest
         Check("primary speed definition remains available in details", presentation.SpeedExplanation!.Contains(CodexUi.T("文本测速", "Text speed")), true);
         var distinctSpeeds = snapshot with { Tps = 3.5, AverageTps = 51.4 };
         Check("compact strip uses live text speed rather than response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds).Contains("3.5 tok/s"), true);
-        Check("missing live telemetry never falls back to the response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with { Tps = null }).Contains("Speed -- tok/s"), true);
+        Check("missing live telemetry never falls back to the response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with { Tps = null }).Contains("Ready"), true);
+        Check("unavailable fields do not form dash placeholders",!OverlayPresentationBuilder.BuildCapsuleText(snapshot with{Tps=null,InputTokens=0,OutputTokens=0,TotalTokens=0}).Contains("--"),true);
+        Check("streaming without a text sample reports waiting",OverlayPresentationBuilder.BuildCapsuleText(snapshot with{Tps=null,Streaming=true}).Contains("Waiting for output"),true);
+        Check("command state replaces the live rate in the compact strip",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="command",ToolRunning=true}).StartsWith("Command ·"),true);
+        Check("thinking state is explicit instead of a zero speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="thinking"}).StartsWith("Thinking ·"),true);
+        Check("visible output restores live speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="generating"}).Contains("3.5 tok/s"),true);
         Check("input details keep exact integers", presentation.ExpandedRows.Single(x => x.Field == DisplayField.Input).Value, "1,234,500");
         Check("uncached input excludes cached input", presentation.ExpandedRows.Single(x => x.Field == DisplayField.CacheMiss).Value, "234,500");
         Check("task duration appears in details", presentation.ExpandedRows.Single(x => x.Field == DisplayField.TurnDuration).Value, CodexUi.T("1 分 5 秒", "1m 5s"));

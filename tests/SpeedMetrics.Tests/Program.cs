@@ -220,6 +220,40 @@ using (var replay = new CodexLiveStream())
     Feed(threadB,new {type="patches",revision=3,baseRevision=2,patches=new[]{new {op="add",
         path=new object[]{"turns",0,"agentMessageCompletedAtMsById","same-item"},value=1234}}});
     Check(replay.Read(threadB).LastOutputAtMs is not null,"completion metadata flushes the unchanged short message tail");
+    Feed(threadB,new {type="snapshot",revision=10,conversationState=new {turns=new[]{new {turnId="turn",turnStartedAtMs=1000,status="inProgress",
+        items=new[]{new {type="commandExecution",id="command",status="inProgress",startedAtMs=1000,completedAtMs=0}}}}}});
+    Check(replay.Read(threadB).ToolRunning,"live IPC command item sets the actual tool-running state");
+    Feed(threadB,new {type="patches",revision=11,baseRevision=10,patches=new[]{new {op="replace",path=new object[]{"turns",0,"items",0,"status"},value="completed"}}});
+    Check(!replay.Read(threadB).ToolRunning,"tool completion patches clear the hold phase");
+
 
 }
+
+var commandDisplay=new LiveSpeedDisplay();commandDisplay.Read(reading,1000);
+Check(commandDisplay.Read(reading with{ToolRunning=true,LiveEstimateTps=1,LastOutputAtMs=1800},2000)==(60d,true),"running command holds the pre-command rate instead of a decayed 1 tok/s");
+Check(commandDisplay.Read(reading with{ToolRunning=false,LiveEstimateTps=1,LastOutputAtMs=1800},5000)==(60d,true),"finishing a command does not publish a stale filter tail");
+Check(commandDisplay.Read(reading with{ToolRunning=false,LiveEstimateTps=80,LastOutputAtMs=6000},6000)==(80d,false),"fresh visible output resumes live updates after the tool");
+var firstDay=E("day-a",1000,500,100) with{Thread="a"};
+var nextDay=E("day-b",2000,1000,200) with{Thread="b",At=firstDay.At.AddDays(1)};
+var breakdownInput=new[]{firstDay,nextDay,firstDay};
+var byThread=UsageBreakdown.ByThread(breakdownInput);var byDayThread=UsageBreakdown.ByDayAndThread(breakdownInput);
+Check(byThread.Count==2&&byDayThread.Count==2,"cost leaderboard and daily conversation rows retain separate threads and dates");
+Check(byThread.Sum(x=>x.Usage.Total)==UsageTotals.Sum(new[]{firstDay,nextDay}).Total,"breakdowns deduplicate response IDs rather than adding fork copies");
+Check(byDayThread.Sum(x=>x.Usage.KnownApiUsd)==UsageTotals.Sum(new[]{firstDay,nextDay}).KnownApiUsd,"daily conversation costs sum to the total API equivalent");
+Check(UsageBreakdown.ByThread(new[]{firstDay with{Model="unknown-new-model"}})[0].Usage.UnpricedResponses==1,"unknown model stays unpriced in the leaderboard");
+
+var monthly=MonthlyApiArchive.Update(Array.Empty<MonthlyApiValue>(),new[]{firstDay,nextDay},new DateOnly(2026,11,15));
+Check(monthly.Single().Month=="2026-11"&&!monthly.Single().Closed,"current UTC month is accumulated before close");
+var closed=MonthlyApiArchive.Update(monthly,new[]{firstDay,nextDay},new DateOnly(2026,12,1));
+Check(closed.Single().Closed,"previous month becomes a local closed summary");
+var frozen=MonthlyApiArchive.Update(closed,new[]{firstDay with{Input=999999}},new DateOnly(2026,12,2));
+Check(frozen.Single().KnownApiUsd==closed.Single().KnownApiUsd&&frozen.Single().Tokens==closed.Single().Tokens,"closed monthly summary is retained rather than rewritten by new prices or deleted history");
+var monthPath=Path.Combine(Path.GetTempPath(),"codex-month-test-"+Guid.NewGuid().ToString("N")+".json");
+try
+{
+    MonthlyApiArchive.Save(monthPath,new[]{firstDay,nextDay},new DateOnly(2026,11,15));
+    var saved=File.ReadAllText(monthPath);MonthlyApiArchive.Save(monthPath,new[]{firstDay,nextDay},new DateOnly(2026,11,15));
+    Check(saved==File.ReadAllText(monthPath),"unchanged monthly data does not produce different archive content");
+}
+finally{if(File.Exists(monthPath))File.Delete(monthPath);}
 Console.WriteLine($"RESULT {checks} checks passed");

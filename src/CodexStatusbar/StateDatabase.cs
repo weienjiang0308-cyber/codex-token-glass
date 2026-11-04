@@ -93,6 +93,10 @@ internal static class StateDatabase
             "WHERE COALESCE(NULLIF(name,''),title)=$id AND " +
             "(SELECT COUNT(*) FROM threads WHERE COALESCE(NULLIF(name,''),title)=$id)=1 LIMIT 1", name);
 
+    public static StateThreadRecord? TryReadDisplayThread(string databasePath, string id) =>
+        QuerySingle(databasePath,"SELECT id,COALESCE(NULLIF(name,''),title),rollout_path,tokens_used,recency_at_ms FROM threads WHERE id=$id LIMIT 1",id)
+        ?? TryReadThread(databasePath,id);
+
     private static StateThreadRecord? QuerySingle(string databasePath, string sql, string? parameter)
     {
         if (!File.Exists(databasePath))

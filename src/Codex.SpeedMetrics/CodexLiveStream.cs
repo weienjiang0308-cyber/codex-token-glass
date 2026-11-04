@@ -136,12 +136,12 @@ public sealed class CodexLiveStream : IDisposable
         }
         finally { _subscriptions.Release(); }
     }
-    public (double? Tps, bool Connected, long? LastOutputAtMs, string? TurnId) Read(string thread)
+    public (double? Tps, bool Connected, long? LastOutputAtMs, string? TurnId, bool ToolRunning, string Activity) Read(string thread)
     {
         lock (_gate)
         {
-            if (!_connected || !_states.TryGetValue(thread, out var state)) return (null, false, null, null);
-            return (state.Window.ReadDisplayRate(Now), true, state.Window.LastOutputAtMs, state.TurnId);
+            if (!_connected || !_states.TryGetValue(thread, out var state)) return (null, false, null, null, false, "connecting");
+            return (state.Window.ReadDisplayRate(Now), true, state.Window.LastOutputAtMs, state.TurnId, IsToolRunning(state), Activity(state));
         }
     }
 
@@ -267,7 +267,11 @@ public sealed class CodexLiveStream : IDisposable
     {
         var type = ResponseSpeedAnalyzer.Text(item, "type");
         if (type is not ("agentMessage" or "reasoning"))
-            return new JsonObject { ["type"] = type, ["id"] = ResponseSpeedAnalyzer.Text(item, "id") };
+            return new JsonObject { ["type"] = type, ["id"] = ResponseSpeedAnalyzer.Text(item, "id"),
+                ["status"] = ResponseSpeedAnalyzer.Text(item,"status"),
+                ["tool"] = ResponseSpeedAnalyzer.Text(item,"tool") ?? ResponseSpeedAnalyzer.Text(item,"name"),
+                ["startedAtMs"] = ResponseSpeedAnalyzer.Number(item,"startedAtMs"),
+                ["completedAtMs"] = ResponseSpeedAnalyzer.Number(item,"completedAtMs") };
         return JsonNode.Parse(item.GetRawText());
     }
     private static string[] PatchPath(JsonElement p)
@@ -290,7 +294,8 @@ public sealed class CodexLiveStream : IDisposable
         // Tool stdout, arguments and file bodies are not visible-model-token estimates.
         if (relative[0] == "items" && relative.Length >= 3 && int.TryParse(relative[1], out var itemIndex) &&
             s.Turn["items"] is JsonArray list && itemIndex >= 0 && itemIndex < list.Count &&
-            list[itemIndex]?["type"]?.GetValue<string>() is not ("agentMessage" or "reasoning")) return;
+            list[itemIndex]?["type"]?.GetValue<string>() is not ("agentMessage" or "reasoning")
+            && !(relative.Length == 3 && relative[2] is "status" or "startedAtMs" or "completedAtMs")) return;
         JsonNode? parent = s.Turn;
         for (var i = 0; i < relative.Length - 1; i++)
         {
@@ -330,6 +335,32 @@ public sealed class CodexLiveStream : IDisposable
             if (!baseline) TextUpdates++;
         }
     }
+    private static string Activity(FollowState state)
+    {
+        if(state.Turn?["status"]?.GetValue<string>() is not "inProgress")return "ready";
+        if(state.Turn?["items"] is JsonArray items)
+        {
+            foreach(var item in items.Reverse())
+            {
+                var type=item?["type"]?.GetValue<string>();
+                var status=item?["status"]?.GetValue<string>();
+                if(status is "completed" or "failed" or "interrupted" || PositiveTimestamp(item?["completedAtMs"]))continue;
+                if(type=="commandExecution" && (status is "inProgress" or "running" || PositiveTimestamp(item?["startedAtMs"])))return "command";
+                if(type=="webSearch")return "searching";
+                if(type=="mcpToolCall" && (status is "inProgress" or "running" || PositiveTimestamp(item?["startedAtMs"])))
+                    return item?["tool"]?.GetValue<string>()?.Contains("search",StringComparison.OrdinalIgnoreCase)==true?"searching":"tool";
+                if(type=="reasoning" && PositiveTimestamp(item?["startedAtMs"]))return "thinking";
+                if(type=="agentMessage" && !PositiveTimestamp(state.Turn?["agentMessageCompletedAtMsById"]?[item?["id"]?.GetValue<string>()??""]))return "generating";
+            }
+        }
+        return "working";
+    }
+    private static bool IsToolRunning(FollowState state) => state.Turn?["status"]?.GetValue<string>() == "inProgress"
+        && state.Turn?["items"] is JsonArray items && items.Any(item => item?["type"]?.GetValue<string>()
+            is "commandExecution" or "mcpToolCall" or "webSearch" &&
+            (item?["status"]?.GetValue<string>() is "inProgress" or "running"
+                || (PositiveTimestamp(item?["startedAtMs"]) && !PositiveTimestamp(item?["completedAtMs"])
+                    && item?["status"]?.GetValue<string>() is not ("completed" or "failed" or "interrupted"))));
     private static bool PositiveTimestamp(JsonNode? node) => node is JsonValue v && v.TryGetValue<long>(out var at) && at > 0;
     private static string TextOf(JsonNode? node)
     {
