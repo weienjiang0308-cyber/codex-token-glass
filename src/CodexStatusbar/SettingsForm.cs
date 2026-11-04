@@ -14,9 +14,16 @@ internal sealed class SettingsForm : Form
     private readonly ContextSlider _glassSlider;
     private readonly Label _glassValue;
     private readonly LiquidBackdropRenderer _optics=new();
-    private readonly System.Windows.Forms.Timer _materialTimer=new(){Interval=16};
+    private readonly UiFrameClock _materialTimer=new();
     private Bitmap? _materialFrame;
+    private SoftWindowEdge? _smoothEdge;
     private bool _materialDirty=true;
+    private bool _renderFromTimer;
+    private bool _edgeDirty=true;
+    private bool _fullSurfaceDirty=true;
+    private long _shownAt;
+    private int? _pendingContextValue,_pendingClarityValue;
+    private OverlayThemePalette? _appliedPalette;
     private readonly Label _threshold;
     private readonly Label _status;
     private readonly Label _contextInfo;
@@ -27,6 +34,11 @@ internal sealed class SettingsForm : Form
     private readonly Func<OverlayThemePalette> _currentPalette;
     private long CompactAt => (long)(_window.Value * _percent.Value / 100m);
     private bool _syncing;
+    internal bool MotionProbeActive;
+    internal readonly List<double> ProbeRenderMs = new();
+    internal readonly List<double> ProbeFrameTimes = new();
+    internal ContextSlider ProbeContext => _slider;
+    internal ContextSlider ProbeClarity => _glassSlider;
 
     public SettingsForm(Func<OverlayThemePalette> palette, Func<long?> liveContext)
     {
@@ -38,7 +50,7 @@ internal sealed class SettingsForm : Form
         Font = CodexUi.FontForText(CodexUi.T("中文", "English"), 10f);
         BackColor = _palette.Background;
         ForeColor = _palette.Value;
-        ClientSize = new Size(552, 730);
+        ClientSize = new Size(552, 770);
         FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -81,7 +93,7 @@ internal sealed class SettingsForm : Form
         Preset("500K", 500_000, 28, 110);
         Preset("1,000,000", 1_000_000, 151, 180);
         Preset("1,050,000", 1_050_000, 344, 178);
-        _contextInfo = AddLabel("", 28, 302, 494, 69, 9.2f, false, true);
+        _contextInfo = AddLabel("", 28, 302, 494, 104, 9.2f, false, true);
         AddLabel(CodexUi.T("自动压缩", "Auto-compaction"), 28, 389, 260, 24, 11, true);
         _percent = new NumericUpDown
         {
@@ -106,16 +118,16 @@ internal sealed class SettingsForm : Form
             CodexUi.Language = language.SelectedIndex switch { 1 => "en", 2 => "zh", _ => "auto" };
             if (_status is not null) _status.Text = CodexUi.T("语言已更新，重新打开设置即可刷新。", "Language updated. Reopen Settings to refresh its labels.");
         };
-        AddLabel(CodexUi.T("玻璃透明度","Glass transparency"),28,510,360,24,11,true);
+        AddLabel(CodexUi.T("玻璃清透度","Glass clarity"),28,510,360,24,11,true);
         _glassValue=AddLabel($"{CodexUi.GlassTransparency}%",440,510,82,24,10.5f);
         _glassValue.TextAlign=ContentAlignment.MiddleRight;
         _glassSlider=new ContextSlider(_palette){Bounds=new Rectangle(28,542,494,38),Minimum=0,Maximum=100,Value=CodexUi.GlassTransparency,
-            AccessibleName=CodexUi.T("玻璃透明度滑块","Glass transparency slider")};
+            AccessibleName=CodexUi.T("玻璃清透度滑块","Glass clarity slider")};
         Controls.Add(_glassSlider);
         AddLabel(CodexUi.T("柔和","Frosted"),28,583,110,20,9,false,true);
         var clear=AddLabel(CodexUi.T("清透","Clear"),412,583,110,20,9,false,true);clear.TextAlign=ContentAlignment.MiddleRight;
         AddLabel(CodexUi.T("实时预览；松手自动保存，文字不随背景变淡。","Live preview. Saves on release; text stays solid."),28,610,494,22,9,false,true);
-        _glassSlider.ValueChanged+=(_,_)=>{CodexUi.PreviewGlassTransparency(_glassSlider.Value);_glassValue.Text=$"{_glassSlider.Value}%";RefreshMaterial();};
+        _glassSlider.ValueChanged+=(_,_)=>{_pendingClarityValue=_glassSlider.Value;RefreshMaterial();};
         _glassSlider.MouseUp+=(_,_)=>CodexUi.CommitAppearance();
         _glassSlider.KeyUp+=(_,_)=>CodexUi.CommitAppearance();
         _status = AddLabel("", 28, 640, 494, 30, 9.2f, false, true);
@@ -124,6 +136,9 @@ internal sealed class SettingsForm : Form
         _restore.Click += (_, _) => ApplyChanges(restore: true);
         var apply = AddButton(CodexUi.T("保存更改", "Save changes"), 372, 680, 166, true);
         apply.Click += (_, _) => ApplyChanges(restore: false);
+        // Four lines of context explanation need more height with Noto/PingFang. Keep everything
+        // below it in the normal flow rather than painting compression controls over the last line.
+        foreach (Control control in Controls) if (control.Top >= 385) control.Top += 40;
         _window.ValueChanged += (_, _) =>
         {
             if (_syncing) return;
@@ -132,7 +147,7 @@ internal sealed class SettingsForm : Form
         _slider.ValueChanged += (_, _) =>
         {
             if (_syncing) return;
-            _window.Value = _slider.Value;
+            _pendingContextValue = _slider.Value;RefreshMaterial();
         };
         _percent.ValueChanged += (_, _) => UpdateThreshold();
         UpdateThreshold();
@@ -142,9 +157,34 @@ internal sealed class SettingsForm : Form
         _materialTimer.Tick+=(_,_)=>
         {
             if(!Visible || !_optics.Ready){_materialTimer.Stop();return;}
-            _materialDirty=true;EnsureMaterial();Invalidate(true);
-            if(!_optics.NeedsFrame)_materialTimer.Stop();
+            FlushPendingInput();
+            _renderFromTimer=true;
+            try{if(_optics.NeedsFrame||_slider.PositionAnimating||_glassSlider.PositionAnimating)_materialDirty=true;EnsureMaterial();}
+            finally{_renderFromTimer=false;}
+            if(_fullSurfaceDirty || Environment.TickCount64-_shownAt<350)
+            {_fullSurfaceDirty=false;Invalidate(true);}
+            else
+            {
+                foreach(Control c in Controls)if(c is GlassButton or ContextSlider)
+                {Invalidate(Rectangle.Inflate(c.Bounds,6,6));c.Invalidate();}
+            }
+            if(!_materialDirty && !_optics.NeedsFrame && !_slider.PositionAnimating && !_glassSlider.PositionAnimating)_materialTimer.Stop();
         };
+    }
+
+    internal void FlushPendingInput()
+    {
+        if(_pendingContextValue is int context)
+        {
+            _pendingContextValue=null;_syncing=true;
+            try{_window.Value=context;}finally{_syncing=false;}
+            UpdateThreshold();UpdateContextInfo();
+        }
+        if(_pendingClarityValue is int clarity)
+        {
+            _pendingClarityValue=null;CodexUi.PreviewGlassTransparency(clarity);
+            _glassValue.Text=$"{clarity}%";_edgeDirty=true;_fullSurfaceDirty=true;
+        }
     }
 
     private void UpdateThreshold() => _threshold.Text = CodexUi.T(
@@ -165,6 +205,7 @@ internal sealed class SettingsForm : Form
 
     private void ApplyChanges(bool restore)
     {
+        FlushPendingInput();
         try
         {
             if (restore) ContextConfiguration.Restore(); else ContextConfiguration.Save((long)_window.Value, CompactAt);
@@ -181,9 +222,10 @@ internal sealed class SettingsForm : Form
     private Label AddLabel(string text, int x, int y, int width, int height, float size,
         bool bold = false, bool muted = false)
     {
-        var label = new Label { Text = text, Bounds = new Rectangle(x, y, width, height),
-            Font = CodexUi.FontForText(text, size, semibold: bold),
-            ForeColor = muted ? _palette.Label : _palette.Value, BackColor = Color.Transparent,
+        var label = new GlassLabel { Text = text, Bounds = new Rectangle(x, y, width, height),
+            UseCompatibleTextRendering = true,
+            Font = CodexUi.FontForText(text, Math.Max(10,size), semibold: bold),
+            ForeColor = muted ? CodexUi.Mix(_palette.Background,_palette.Value,.82) : _palette.Value, BackColor = Color.Transparent,
             Tag = muted ? "muted" : "text" };
         Controls.Add(label); return label;
     }
@@ -192,7 +234,7 @@ internal sealed class SettingsForm : Form
     {
         var button = new GlassButton { Text = text, Bounds = new Rectangle(x, y, width, 36),
             FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, UseVisualStyleBackColor = false,
-            Font = CodexUi.FontForText(text, 9.5f, semibold: primary),
+            Font = CodexUi.FontForText(text, 10.5f, semibold: primary),
             ForeColor = primary ? _palette.Background : _palette.Value,
             BackColor = primary ? _palette.Value : _palette.Background,
             Tag = primary ? "primary" : "secondary" };
@@ -204,12 +246,14 @@ internal sealed class SettingsForm : Form
     private void RefreshPalette()
     {
         var palette = _currentPalette();
+        if(_appliedPalette==palette)return;
+        _appliedPalette=palette;_edgeDirty=true;_fullSurfaceDirty=true;
         BackColor = palette.Background;
         ForeColor = palette.Value;
         foreach (Control child in Controls)
         {
             if (child is ContextSlider slider) { slider.SetPalette(palette); continue; }
-            child.ForeColor = Equals(child.Tag, "muted") ? palette.Label : Equals(child.Tag, "primary") ? palette.Background : palette.Value;
+            child.ForeColor = Equals(child.Tag, "muted") ? CodexUi.Mix(palette.Background,palette.Value,.82) : Equals(child.Tag, "primary") ? palette.Background : palette.Value;
             if (child is not Label) child.BackColor = Equals(child.Tag, "primary") ? palette.Value : palette.Background;
             if (child is NumericUpDown) child.BackColor = CodexUi.Mix(palette.Background,palette.Value,.025);
             if (child is Button button) button.FlatAppearance.BorderColor = palette.Border;
@@ -222,8 +266,9 @@ internal sealed class SettingsForm : Form
     internal void RefreshMaterial()
     {
         if(IsDisposed || Disposing)return;
-        _materialDirty=true;Invalidate(true);
+        _materialDirty=true;
         if(_optics.Ready && Visible)_materialTimer.Start();
+        else Invalidate(true);
     }
 
     protected override void OnLoad(EventArgs e)
@@ -236,23 +281,38 @@ internal sealed class SettingsForm : Form
     private void EnsureMaterial()
     {
         if(!_optics.Ready || !_materialDirty || ClientSize.Width<1 || ClientSize.Height<1)return;
+        if(_materialFrame is not null && !_renderFromTimer)return;
+        var started=System.Diagnostics.Stopwatch.GetTimestamp();
+        _optics.CacheBackgroundEnabled=!_glassSlider.Capture;
+        _optics.UseClarityPreview=_glassSlider.Capture;
+        // Geometry retains native 4x MSAA while dragging. Restore full supersampling on release;
+        // this avoids a whole-window 2x readback on every pointer update. Text stays native/sharp.
+        _optics.RenderScaleOverride=(_slider.Capture||_glassSlider.Capture)?1:null;
         var palette=_currentPalette();var u=DeviceDpi/96f;
-        var alpha=DesktopMaterial.TransparencyEnabled?Math.Clamp(238-CodexUi.GlassTransparency,138,238):255;
-        _optics.ReadingSurfaces((new Rectangle((int)(16*u),(int)(104*u),ClientSize.Width-(int)(32*u),(int)(527*u)),16*u,Color.FromArgb(alpha,palette.Background)));
+        var alpha=GlassAppearance.ReadingPlateAlpha(CodexUi.GlassTransparency);
+        _optics.ReadingSurfaces((new Rectangle((int)(16*u),(int)(104*u),ClientSize.Width-(int)(32*u),(int)(567*u)),16*u,Color.FromArgb(alpha,palette.Background)));
         foreach(Control control in Controls)
         {
             if(control is GlassButton button)
                 _optics.Control(control.GetHashCode(),control.Bounds,control.Height/2f,button.MaterialHovered,button.MaterialPressed,Equals(control.Tag,"primary"));
             else if(control is ContextSlider slider)
             {
-                _optics.Track(control.GetHashCode(),slider.Bounds,(slider.Value-slider.Minimum)/(float)Math.Max(1,slider.Maximum-slider.Minimum),palette.ProgressTrack,palette.Value);
+                _optics.Track(control.GetHashCode(),slider.Bounds,(float)slider.VisualFraction,palette.ProgressTrack,palette.Value);
                 var thumb=slider.ThumbBounds;thumb.Offset(slider.Left,slider.Top);
                 _optics.Control(control.GetHashCode(),thumb,thumb.Height/2f,slider.MaterialHovered,slider.Capture);
             }
         }
         if(_materialFrame is null || _materialFrame.Size!=ClientSize){_materialFrame?.Dispose();_materialFrame=new Bitmap(ClientSize.Width,ClientSize.Height,System.Drawing.Imaging.PixelFormat.Format32bppPArgb);}
+        _optics.PrepareClarityPreview(_materialFrame,palette.Background.GetBrightness()<.5);
         _optics.RenderInto(_materialFrame,palette.Background.GetBrightness()<.5);
         _materialDirty=false;
+        if(_edgeDirty || Environment.TickCount64-_shownAt<350)
+        {_smoothEdge?.Present(_materialFrame,32*u);_edgeDirty=false;}
+        if(MotionProbeActive)
+        {
+            ProbeRenderMs.Add((System.Diagnostics.Stopwatch.GetTimestamp()-started)*1000d/System.Diagnostics.Stopwatch.Frequency);
+            ProbeFrameTimes.Add(started*1000d/System.Diagnostics.Stopwatch.Frequency);
+        }
     }
 
     internal bool DrawControlMaterial(Control control,Graphics graphics)
@@ -268,11 +328,15 @@ internal sealed class SettingsForm : Form
         else base.OnPaintBackground(e);
     }
 
-    protected override void OnShown(EventArgs e) { base.OnShown(e); RefreshPalette(); }
+    protected override void OnShown(EventArgs e)
+    { base.OnShown(e);_shownAt=Environment.TickCount64;_smoothEdge??=new SoftWindowEdge(this);_edgeDirty=true;RefreshPalette();RefreshMaterial(); }
+    protected override void OnLocationChanged(EventArgs e){base.OnLocationChanged(e);_smoothEdge?.Follow();}
+    protected override void OnVisibleChanged(EventArgs e){base.OnVisibleChanged(e);if(!Visible)_smoothEdge?.Hide();}
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        using var shape = FrameShape(new Rectangle(0, 0, Width, Height), 32 * DeviceDpi / 96);
+        var inset=Math.Max(2,(int)Math.Round(2*DeviceDpi/96d));
+        using var shape = FrameShape(new Rectangle(inset,inset,Math.Max(1,Width-2*inset),Math.Max(1,Height-2*inset)),Math.Max(1,32*DeviceDpi/96-inset));
         Region?.Dispose(); Region = new Region(shape);
     }
     protected override void OnPaint(PaintEventArgs e)
@@ -308,8 +372,8 @@ internal sealed class SettingsForm : Form
         if (keyData == Keys.Escape) { Close(); return true; }
         return base.ProcessCmdKey(ref message, keyData);
     }
-    protected override void OnFormClosing(FormClosingEventArgs e){CodexUi.CommitAppearance();base.OnFormClosing(e);}
-    protected override void Dispose(bool disposing) { if (disposing){_themeTimer.Dispose();_materialTimer.Dispose();_materialFrame?.Dispose();_optics.Dispose();} base.Dispose(disposing); }
+    protected override void OnFormClosing(FormClosingEventArgs e){FlushPendingInput();CodexUi.CommitAppearance();base.OnFormClosing(e);}
+    protected override void Dispose(bool disposing) { if (disposing){_smoothEdge?.Dispose();_themeTimer.Dispose();_materialTimer.Dispose();_materialFrame?.Dispose();_optics.Dispose();} base.Dispose(disposing); }
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr handle, int attr, ref int value, int size);
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr handle, int message, IntPtr w, IntPtr l);
@@ -317,6 +381,8 @@ internal sealed class SettingsForm : Form
 
 internal sealed class GlassButton : Button
 {
+    private Bitmap? _textImage;
+    private (string Text,Size Size,int Dpi,Font Font,int Color)? _textKey;
     private bool _hovered;
     private bool _pressed;
     internal bool MaterialHovered=>_hovered;
@@ -351,25 +417,55 @@ internal sealed class GlassButton : Button
             using var pen=new Pen(ForeColor,1.8f*u){StartCap=LineCap.Round,EndCap=LineCap.Round};
             e.Graphics.DrawLine(pen,x-5*u,y-5*u,x+5*u,y+5*u);e.Graphics.DrawLine(pen,x+5*u,y-5*u,x-5*u,y+5*u);
         }
-        else TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle,
-            Enabled ? ForeColor : CodexUi.Mix(BackColor, ForeColor, .40),
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        else
+        {
+            var color=Enabled?ForeColor:CodexUi.Mix(BackColor,ForeColor,.40);
+            var key=(Text,ClientSize,DeviceDpi,Font,color.ToArgb());
+            if(_textImage is null||_textKey!=key)
+            {
+                _textImage?.Dispose();_textImage=new Bitmap(Width,Height,System.Drawing.Imaging.PixelFormat.Format32bppPArgb);_textImage.SetResolution(DeviceDpi,DeviceDpi);
+                using var textGraphics=Graphics.FromImage(_textImage);textGraphics.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                using var brush=new SolidBrush(color);using var format=new StringFormat{Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center,FormatFlags=StringFormatFlags.NoWrap};
+                if(!AppleText.Draw(textGraphics,Text,Font,ClientRectangle,color,format.Alignment,format.LineAlignment))textGraphics.DrawString(Text,Font,brush,ClientRectangle,format);
+                _textKey=key;
+            }
+            e.Graphics.DrawImageUnscaled(_textImage,0,0);
+        }
         if (Focused && ShowFocusCues) { using var focus = new Pen(ForeColor) { DashStyle = DashStyle.Dot }; e.Graphics.DrawPath(focus, path); }
     }
+    protected override void Dispose(bool disposing){if(disposing)_textImage?.Dispose();base.Dispose(disposing);}
 }
 
 internal class ContextSlider : Control
 {
+    internal void ProbeDown(int x)=>OnMouseDown(new MouseEventArgs(MouseButtons.Left,1,x,Height/2,0));
+    internal void ProbeMove(int x)=>OnMouseMove(new MouseEventArgs(MouseButtons.Left,0,x,Height/2,0));
+    internal void ProbeUp(int x)=>OnMouseUp(new MouseEventArgs(MouseButtons.Left,1,x,Height/2,0));
     private OverlayThemePalette _palette;
     private int _value;
     private bool _hovered;
     internal bool MaterialHovered=>_hovered;
+    private double? _dragFraction;
+    private double _releaseFrom;
+    private long _releasedAt;
+    private double NumericFraction=>(_value-Minimum)/(double)Math.Max(1,Maximum-Minimum);
+    internal bool PositionAnimating=>!Capture&&_releasedAt>0&&Environment.TickCount64-_releasedAt<GlassMotion.PositionSettleMilliseconds&&Math.Abs(_releaseFrom-NumericFraction)>.00001;
+    internal double VisualFraction
+    {
+        get
+        {
+            if(Capture&&_dragFraction is double value)return value;
+            if(!PositionAnimating)return NumericFraction;
+            var t=Math.Clamp((Environment.TickCount64-_releasedAt)/(double)GlassMotion.PositionSettleMilliseconds,0,1);
+            return _releaseFrom+(NumericFraction-_releaseFrom)*(1-Math.Pow(1-t,3));
+        }
+    }
     internal Rectangle ThumbBounds
     {
         get
         {
-            var u=DeviceDpi/96f;var x=22*u+(Width-44*u)*(_value-Minimum)/Math.Max(1f,Maximum-Minimum);
-            var width=(Capture?40:32)*u;var height=(Capture?28:24)*u;
+            var u=DeviceDpi/96f;var x=(float)(22*u+(Width-44*u)*VisualFraction);
+            var width=32*u;var height=24*u;
             return Rectangle.Round(new RectangleF(x-width/2,Height/2f-height/2,width,height));
         }
     }
@@ -396,11 +492,11 @@ internal class ContextSlider : Control
         }
         var g = e.Graphics; g.Clear(_palette.Background); g.SmoothingMode = SmoothingMode.AntiAlias;
         var start = 22f; var end = Width - 22f; var y = Height / 2f;
-        var x = start + (end - start) * (_value - Minimum) / Math.Max(1f, Maximum - Minimum);
+        var x = (float)(start + (end - start) * VisualFraction);
         using var track = new Pen(_palette.ProgressTrack, 5) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         using var fill = new Pen(_palette.Value, 5) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         g.DrawLine(track, start, y, end, y); g.DrawLine(fill, start, y, x, y);
-        var width = Capture ? 40f : 32f; var height = Capture ? 28f : 24f;
+        var width = 32f; var height = 24f;
         using var shape = new GraphicsPath();
         shape.AddArc(x-width/2,y-height/2,height,height,90,180);
         shape.AddArc(x+width/2-height,y-height/2,height,height,270,180);shape.CloseFigure();
@@ -416,11 +512,14 @@ internal class ContextSlider : Control
     private void SetFromX(int x)
     {
         var u=DeviceDpi/96d;var step=Maximum-Minimum<=100?1:1000;
-        Value=Math.Clamp((int)Math.Round((Minimum+Math.Clamp((x-22*u)/Math.Max(1,Width-44*u),0,1)*(Maximum-Minimum))/step)*step,Minimum,Maximum);
+        _dragFraction=Math.Clamp((x-22*u)/Math.Max(1,Width-44*u),0,1);
+        Value=Math.Clamp((int)Math.Round((Minimum+_dragFraction.Value*(Maximum-Minimum))/step)*step,Minimum,Maximum);
+        MaterialChanged();
     }
     protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { Focus(); Capture = true; SetFromX(e.X); MaterialChanged(); } base.OnMouseDown(e); }
     protected override void OnMouseMove(MouseEventArgs e) { if (Capture && e.Button == MouseButtons.Left) SetFromX(e.X); base.OnMouseMove(e); }
-    protected override void OnMouseUp(MouseEventArgs e) { Capture = false; MaterialChanged(); base.OnMouseUp(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { if(Capture)SetFromX(e.X);Capture = false; if(Parent is SettingsForm form)form.FlushPendingInput();MaterialChanged(); base.OnMouseUp(e); }
+    protected override void OnMouseCaptureChanged(EventArgs e){base.OnMouseCaptureChanged(e);if(!Capture){if(_dragFraction is double from){_releaseFrom=from;_releasedAt=Environment.TickCount64;_dragFraction=null;}if(Parent is SettingsForm form)form.FlushPendingInput();MaterialChanged();}}
     protected override bool IsInputKey(Keys keyData) => keyData is Keys.Left or Keys.Right or Keys.Home or Keys.End || base.IsInputKey(keyData);
     protected override void OnKeyDown(KeyEventArgs e)
     {

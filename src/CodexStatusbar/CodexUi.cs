@@ -49,14 +49,18 @@ internal static class CodexUi
         var p=JsonSerializer.Deserialize<Preferences>(json,new JsonSerializerOptions{PropertyNameCaseInsensitive=true})??new();
         return(p.Language,Math.Clamp(p.GlassTransparency,0,100));
     }
-    private static readonly string PreferencesPath = Path.Combine(
+    private static readonly string PreferencesPath = Environment.GetEnvironmentVariable("CODEX_STATUSBAR_UI_SETTINGS") ?? Path.Combine(
         Path.GetDirectoryName(CodexThemeSource.DefaultConfigPath)!,"codex-token-glass","ui.json");
     private static readonly string LegacyPreferencesPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexStatusbar", "ui.json");
 
     private static readonly PrivateFontCollection ModernFonts = LoadFonts();
-    public static string FontName => "Inter";
-    public static string DisplayFontName => "Inter";
+    private static readonly HashSet<string> InstalledFonts = System.Drawing.FontFamily.Families
+        .Select(x => x.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    public static string FontName => PreferredFont("Segoe UI Variable Text", "Segoe UI");
+    public static string DisplayFontName => PreferredFont("Segoe UI Variable Display", "Segoe UI");
+    public static string ChineseFontName => PreferredFont("Noto Sans SC", "Microsoft YaHei UI");
+    private static string PreferredFont(params string[] names) => names.FirstOrDefault(InstalledFonts.Contains) ?? "Segoe UI";
 
     private static PrivateFontCollection LoadFonts()
     {
@@ -77,20 +81,31 @@ internal static class CodexUi
 
     public static Font Font(float size, bool semibold = false)
     {
-        var family = ModernFonts.Families.FirstOrDefault(x =>
-            semibold ? x.Name.Contains("Semi", StringComparison.OrdinalIgnoreCase) : x.Name == "Inter")
-            ?? ModernFonts.Families.FirstOrDefault();
-        return family is null ? new Font("Segoe UI", size, semibold ? FontStyle.Bold : FontStyle.Regular)
-            : new Font(family, size, FontStyle.Regular, GraphicsUnit.Point);
+        var name = size >= 18 ? DisplayFontName : FontName;
+        if (semibold && name.StartsWith("Segoe UI Variable", StringComparison.Ordinal))
+        {
+            name = size >= 18 ? PreferredFont("Segoe UI Variable Display Semib", "Segoe UI Variable Display", "Segoe UI")
+                : PreferredFont("Segoe UI Variable Text Semibold", "Segoe UI Variable Text", "Segoe UI");
+            return new Font(name,size,FontStyle.Regular,GraphicsUnit.Point);
+        }
+        return new Font(name,size,semibold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Point);
     }
 
     public static Font FontForText(string text, float size, bool semibold = false)
     {
-        // Inter has no CJK glyphs. Select a modern sans fallback explicitly instead of GDI+'s SimSun.
+        // Restore the original Windows UI and bundled CJK font selection.
+        // Noto Sans SC is the explicit fallback; never let CJK silently fall back to SimSun.
         if (text.Any(c => c is >= '\u2e80' and <= '\u9fff') || (text.Length == 0 && !English))
-            return new Font("Microsoft YaHei UI", size, semibold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
+        {
+            var name = ChineseFontName;
+            if (semibold && name == "Noto Sans SC" && InstalledFonts.Contains("Noto Sans SC Medium"))
+                return new Font("Noto Sans SC Medium",size,FontStyle.Regular,GraphicsUnit.Point);
+            return new Font(name,size,semibold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Point);
+        }
         return Font(size, semibold);
     }
+
+    internal static bool IsEmphasized(Font font) => font.Bold || font.FontFamily.Name.Contains("Semi", StringComparison.OrdinalIgnoreCase);
 
     private static string PickFont(params string[] candidates)
     {

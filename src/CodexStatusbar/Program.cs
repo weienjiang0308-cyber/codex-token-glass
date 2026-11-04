@@ -115,6 +115,21 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        Codex.SpeedMetrics.HostTokenizer.Initialize();
+        if (args.Length >= 2 && args[0] == "--motion-probe") return SettingsMotionProbe.Run(args[1]);
+        if (args.Contains("--speed-json")) return Codex.SpeedMetrics.SpeedCli.Run(args);
+        if (args.Length >= 2 && args[0] == "--glass-preview") return GlassStatisticsPreview.Run(args[1]);
+        if (args.Contains("--statistics-json"))
+        {
+            using var statistics = new UsageStatisticsService(SessionPathResolver.Resolve(), background: false);
+            statistics.RefreshAsync(CancellationToken.None).GetAwaiter().GetResult();
+            var state = statistics.Current!;
+            Console.WriteLine(JsonSerializer.Serialize(new { Snapshot = state,
+                PriceCatalog = Codex.SpeedMetrics.ApiEquivalent.Prices,
+                ByThread = state.Entries.GroupBy(e => e.Thread).ToDictionary(g => g.Key, g => Codex.SpeedMetrics.UsageTotals.Sum(g)),
+                Days = Codex.SpeedMetrics.UsageMerge.Combine(state.OfficialDays, state.Entries, DateOnly.FromDateTime(DateTime.UtcNow)) }));
+            return statistics.Current?.Error is null ? 0 : 1;
+        }
         CommandLineOptions options;
         try
         {
@@ -297,7 +312,10 @@ internal sealed record TokenSnapshot(
     int DedupIgnored = 0,
     long? TurnElapsedMs = null,
     double? PeakTps = null,
-    double? AverageTps = null)
+    double? AverageTps = null,
+    int TimedResponseCount = 0,
+    int CompletedResponseCount = 0,
+    bool LiveEstimateConnected = false)
 {
     public double? CacheHitPercent => MetricFormat.CacheHitPercent(InputTokens, CachedInputTokens);
 
@@ -570,6 +588,11 @@ internal sealed class CodexIpcActiveThreadMonitor : IDisposable
             return;
         }
 
+        // Our read-only telemetry followers are not application windows and must never select
+        // the active chat merely because they subscribed to it.
+        if (parameters.TryGetProperty("speedObserver", out var observer) && observer.ValueKind == JsonValueKind.True)
+            return;
+
         if (methodName != "thread-stream-following-changed"
             || !parameters.TryGetProperty("conversationId", out var conversationIdElement)
             || !parameters.TryGetProperty("hostId", out var hostIdElement)
@@ -744,6 +767,8 @@ internal sealed class CodexIpcActiveThreadMonitor : IDisposable
 /// </summary>
 internal sealed class TokenLogMonitor : IDisposable
 {
+    private readonly Codex.SpeedMetrics.SpeedObserver _speedObserver;
+    private readonly Codex.SpeedMetrics.LiveSpeedDisplay _liveSpeedDisplay = new();
     private static readonly TimeSpan StateDatabaseRefreshInterval = TimeSpan.FromSeconds(5);
 
     private readonly string _sessionRoot;
@@ -770,6 +795,8 @@ internal sealed class TokenLogMonitor : IDisposable
     public TokenLogMonitor(string? sessionRoot = null, string? stateDatabasePath = null)
     {
         _sessionRoot = sessionRoot ?? SessionPathResolver.Resolve();
+        _speedObserver = new Codex.SpeedMetrics.SpeedObserver(
+            string.Equals(Path.GetFullPath(_sessionRoot), Path.GetFullPath(SessionPathResolver.Resolve()), StringComparison.OrdinalIgnoreCase));
         _stateDatabasePath = stateDatabasePath ?? StateDatabase.ResolvePathForSessionsRoot(_sessionRoot);
 
         if (!Directory.Exists(_sessionRoot))
@@ -1119,8 +1146,15 @@ internal sealed class TokenLogMonitor : IDisposable
             baselineSource = _stateRecord.TokensUsed > 0 ? "state-db" : baselineSource;
         }
 
-        var tps = tracker?.DisplayTps;
-        var lastTurnTps = tracker?.LastTurnTps;
+        Codex.SpeedMetrics.SpeedReading? speed = null;
+        if (!string.IsNullOrEmpty(threadId) && !string.IsNullOrEmpty(_readerPath))
+        {
+            _speedObserver.Watch(new[] { threadId });
+            speed = _speedObserver.Read(threadId, _readerPath);
+        }
+        var display = speed is null ? (Rate: (double?)null, Held: false) : _liveSpeedDisplay.Read(speed, Environment.TickCount64);
+        var tps = display.Rate;
+        var lastTurnTps = speed?.AverageTps;
         var warnings = state is null ? null : state.Warnings.ToArray();
         var path = _readerPath ?? string.Empty;
 
@@ -1174,6 +1208,8 @@ internal sealed class TokenLogMonitor : IDisposable
 
         var turnElapsedMs = state?.TurnElapsedMs(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         signature += "|elapsed:" + (turnElapsedMs / 1000)?.ToString(CultureInfo.InvariantCulture);
+        signature += "|speed:" + tps?.ToString("0.0", CultureInfo.InvariantCulture) + ":" +
+            speed?.AverageTps?.ToString("0.000", CultureInfo.InvariantCulture) + ":" + speed?.AverageCoverage + ":held:" + display.Held;
         if (signature == _cachedSignature && _lastSnapshot is not null)
         {
             return _lastSnapshot;
@@ -1216,6 +1252,21 @@ internal sealed class TokenLogMonitor : IDisposable
             turnElapsedMs,
             tracker?.PeakTps,
             tracker?.AverageTps);
+        if (speed is not null)
+            _lastSnapshot = _lastSnapshot with
+            {
+                Tps = display.Rate,
+                LastTurnTps = speed.AverageTps,
+                AverageTps = speed.AverageTps,
+                PeakTps = speed.PeakResponseTps,
+                TurnGenerationMs = speed.TimedMilliseconds,
+                MergedModelElapsedMs = speed.TimedMilliseconds,
+                TpsHeld = display.Held,
+                TpsState = display.Held ? "last-visible-text-reading-held" : "visible-text-estimate",
+                TimedResponseCount = speed.TimedResponses,
+                CompletedResponseCount = speed.CompletedResponses,
+                LiveEstimateConnected = speed.LiveConnected
+            };
         return _lastSnapshot;
     }
 
@@ -1242,7 +1293,7 @@ internal sealed class TokenLogMonitor : IDisposable
         return fileName.Length >= 36 ? fileName[^36..] : fileName;
     }
 
-    public void Dispose() => _watcher?.Dispose();
+    public void Dispose() { _watcher?.Dispose(); _speedObserver.Dispose(); }
 }
 
 /// <summary>

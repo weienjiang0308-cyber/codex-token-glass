@@ -163,6 +163,8 @@ internal static class TpsRules
 /// </summary>
 internal sealed class TpsTracker
 {
+    // Legacy parser diagnostics only. This item-window estimate is NOT used for displayed speed;
+    // TokenLogMonitor overlays the verified response clocks and live tokenizer from SpeedObserver.
     private readonly HashSet<string> _seenResponseKeys = new(StringComparer.Ordinal);
 
     /// <summary>

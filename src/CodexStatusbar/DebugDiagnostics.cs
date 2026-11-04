@@ -543,14 +543,16 @@ internal sealed class DebugDiagnostics
         Append(builder, "Turn output tokens:", snapshot.TurnOutputTokens.ToString(CultureInfo.InvariantCulture));
         Append(
             builder,
-            "Model intervals:",
+            "Legacy item windows (NOT speed clock):",
             snapshot.ModelIntervals is { Count: > 0 } intervals
                 ? string.Join(' ', intervals)
                 : "none");
         Append(builder, "First item start:", FormatTimestamp(snapshot.FirstItemStartMs));
         Append(builder, "Last item end:", FormatTimestamp(snapshot.LastItemEndMs));
-        Append(builder, "Current realtime TPS:", MetricFormat.FormatTpsFloat(snapshot.Tps));
-        Append(builder, "Last completed TPS:", MetricFormat.FormatTpsFloat(snapshot.LastTurnTps));
+        Append(builder, "Live visible-text estimate TPS:", snapshot.Tps?.ToString("0.0", CultureInfo.InvariantCulture) ?? "--");
+        Append(builder, "Completed-response average TPS:", MetricFormat.FormatTpsFloat(snapshot.AverageTps));
+        Append(builder, "Timed response coverage:", $"{snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount}");
+        Append(builder, "Live estimate source:", snapshot.LiveEstimateConnected ? "Codex IPC; o200k_base; 2-second window" : "unavailable");
         Append(
             builder,
             "TTFT ms:",

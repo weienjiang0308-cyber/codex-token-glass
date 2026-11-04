@@ -125,6 +125,10 @@ internal sealed class ComposerDockTracker : IDisposable
     /// <summary>A full tree walk at least this often, as a safety net against silent layout drift.</summary>
     private static readonly TimeSpan ResyncInterval = TimeSpan.FromSeconds(20);
 
+    // A new chat has no Context indicator yet. Keep discovering its toolbar until the
+    // indicator appears instead of leaving a model/composer fallback stale for 20 seconds.
+    private static readonly TimeSpan RecoveryResyncInterval = TimeSpan.FromMilliseconds(750);
+
     private readonly object _gate = new();
     private readonly Func<IntPtr> _windowProvider;
     private Thread? _thread;
@@ -373,7 +377,7 @@ internal sealed class ComposerDockTracker : IDisposable
                     walksRemaining = 2;
                 }
 
-                if (DateTime.UtcNow - lastWalkAt > ResyncInterval)
+                if (DateTime.UtcNow - lastWalkAt > (reference is null ? RecoveryResyncInterval : ResyncInterval))
                 {
                     walksRemaining = 2;
                 }
@@ -594,12 +598,12 @@ internal sealed class ComposerDockTracker : IDisposable
                 continue;
             }
 
-            if (!contextRect.IsEmpty && buttonRect.Left < contextRect.Left)
+            if (!ComposerToolbarRules.IsModelCandidate(buttonRect, composerRect, contextRect))
             {
                 continue;   // the permission button, which also expands
             }
 
-            if (!modelFound || buttonRect.Left < modelRect.Left)
+            if (!modelFound || buttonRect.Left > modelRect.Left)
             {
                 model = button;
                 modelRect = buttonRect;
@@ -625,27 +629,16 @@ internal sealed class ComposerDockTracker : IDisposable
 
         foreach (var candidate in children)
         {
-            if (contextIndex >= 0 && candidate.Index >= contextIndex)
-            {
-                continue;
-            }
-
-            if (candidate.Rect.IsEmpty || candidate.Rect.Height <= 1)
-            {
-                continue;   // the editor itself spans the whole card
-            }
-
+            // In an empty chat there is no Context image to divide the toolbar. Use the
+            // selected model's geometry instead, so model/voice/send controls never become
+            // part of the left cluster and consume the strip's entire width budget.
+            var toolbarReference = contextRect.IsEmpty ? modelRect : contextRect;
             // Only real controls count as the barrier. The composer's `display: contents` wrappers have
             // no layout box, so Chromium synthesises a rectangle for them that is wider than any of
             // their children — counting one would shrink the width budget by a hundred pixels or more
             // and hide a strip that had room all along.
-            if (candidate.ControlType is not ("Button" or "Image"))
-            {
-                continue;
-            }
-
-            var overlapsRow = candidate.Rect.Bottom > rowTop && candidate.Rect.Y < rowBottom;
-            if (!overlapsRow)
+            if (!ComposerToolbarRules.IsLeftClusterControl(
+                    candidate.ControlType, candidate.Rect, toolbarReference, rowTop, rowBottom))
             {
                 continue;
             }

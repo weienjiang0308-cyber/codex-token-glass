@@ -7,7 +7,8 @@ namespace CodexStatusbar;
 /// <summary>
 /// Headless assertions over the <b>production</b> parser (<see cref="RolloutStreamState"/>) and the
 /// <b>production</b> formatter (<see cref="MetricFormat"/>). Nothing here is a reimplementation, so a
-/// pass means the real pipeline is correct.
+/// pass checks compatibility of that parser and the UI. Displayed speed is now supplied by
+/// Codex.SpeedMetrics; its timing/tokenizer regression suite is the dedicated SpeedMetrics.Tests project.
 ///
 /// Run with <c>--self-test [fixturesDir]</c>. Exits 0 on success, 1 on any failure.
 ///
@@ -34,6 +35,8 @@ internal static class SelfTest
 
         stdout.WriteLine("CodexStatusbar self-test");
         stdout.WriteLine("========================");
+        stdout.WriteLine("Parser/UI compatibility tests; legacy item-window checks do not certify the new speed metric.");
+        RunObserverRouteIsolation();
 
         var modernFixture = Locate(fixturesDirectory, "fixture-modern.jsonl");
         var legacyFixture = Locate(fixturesDirectory, "fixture-legacy.jsonl");
@@ -77,6 +80,26 @@ internal static class SelfTest
         RunContextSettings();
         Section("concentric geometry and readable content at desktop DPI scales");
         RunConcentricRendering();
+        using(var slider=new ContextSlider(OverlayThemePalette.For(OverlayThemeKind.Light)){Width=494,Height=38,Minimum=0,Maximum=100})
+        {
+            slider.ProbeDown(247);var value=slider.Value;var x=slider.ThumbBounds.X;slider.ProbeMove(248);
+            Check("clarity thumb follows pixels even when displayed percentage is unchanged",slider.Value==value&&slider.ThumbBounds.X>x,true);
+            slider.ProbeUp(248);
+        }
+        Check("100 percent clarity uses the same zero tint for every secondary control",GlassAppearance.ControlTint(100,false)==0,true);
+        Check("hover cannot introduce a different tint at the clear endpoint",GlassAppearance.ControlTint(100,true)==0,true);
+        Section("native dialog alpha fringe");
+        using(var source=new Bitmap(120,120,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+        {
+            using(var g=Graphics.FromImage(source))
+            using(var path=LayeredSurface.Round(new Rectangle(0,0,120,120),32))
+            {g.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;g.FillPath(Brushes.White,path);}
+            using var ring=SoftWindowEdge.BuildRing(source,32,3);
+            Check("fringe leaves native controls unobscured",ring.GetPixel(60,60).A,(byte)0);
+            Check("fringe preserves the top edge",ring.GetPixel(60,1).A>0,true);
+            var soft=0;for(int y=0;y<32;y++)for(int x=0;x<32;x++){var a=ring.GetPixel(x,y).A;if(a>0&&a<255)soft++;}
+            Check("fringe carries partial-alpha corner pixels",soft>0,true);
+        }
         Section("LiquidGlass shader compilation and spring feedback");
         RunLiquidGlass();
 
@@ -99,6 +122,27 @@ internal static class SelfTest
         stdout.WriteLine($"checks: {_checks}   failures: {_failures}");
         stdout.WriteLine($"RESULT: {(_failures == 0 ? "PASS" : "FAIL")}");
         return _failures == 0 ? 0 : 1;
+    }
+
+    private static void RunObserverRouteIsolation()
+    {
+        using var route = new CodexIpcActiveThreadMonitor();
+        var feed = typeof(CodexIpcActiveThreadMonitor).GetMethod("ProcessFrame",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        void Follow(string thread, bool observer) => feed.Invoke(route, new object[]
+        {
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+            {
+                type = "broadcast", method = "thread-stream-following-changed", sourceClientId = "test-source",
+                @params = new { conversationId = thread, hostId = "local", following = true, speedObserver = observer }
+            }))
+        });
+        Follow("visible-chat", false);
+        Check("a real UI follower selects the visible chat", route.GetStatus().ThreadId ?? "", "visible-chat");
+        Follow("observer-chat", true);
+        Check("a metrics observer cannot replace the visible chat", route.GetStatus().ThreadId ?? "", "visible-chat");
+        Follow("new-visible-chat", false);
+        Check("real UI navigation still selects the next chat", route.GetStatus().ThreadId ?? "", "new-visible-chat");
     }
 
     /// <summary>
@@ -212,9 +256,69 @@ internal static class SelfTest
     /// probe measured on the real Codex window (kept in the fixtures below), so these checks are
     /// statements about the real toolbar rather than about invented numbers.
     /// </summary>
+    private static void RunEmptyChatToolbar()
+    {
+        Check("new-chat toolbar clears previous conversation metrics",
+            ComposerToolbarRules.WaitForUsage(ComposerReferenceSource.UiaModel, false), true);
+        Check("incomplete UIA reads cannot restore stale metrics in a new chat",
+            ComposerToolbarRules.WaitForUsage(ComposerReferenceSource.Window, true), true);
+        Check("Context appearing restores live metrics",
+            ComposerToolbarRules.WaitForUsage(ComposerReferenceSource.UiaContext, true), false);
+        var waiting = OverlayPresentationBuilder.CreateWaiting("New chat",
+            DisplayField.Tps, DisplayField.Total, DisplayField.Tps | DisplayField.Total);
+        Check("empty chat has unknown speed instead of previous speed", waiting.Primary.HasValue, false);
+        Check("empty chat has unknown token count instead of previous count", waiting.Secondary.HasValue, false);
+        // Captured from the user's 1920x1080 desktop: the new-chat composer has no
+        // Context image. Previously attachment (768,976) became the model and all
+        // right-hand controls became the left cluster, giving a -755 DIP budget.
+        foreach (var scale in new[] { 1, 2 })
+        {
+            IntRect R(int x, int y, int width, int height) =>
+                new(x * scale, y * scale, width * scale, height * scale);
+            var composer = R(760, 914, 737, 98);
+            var add = R(768, 976, 29, 28);
+            var permission = R(808, 976, 88, 28);
+            var model = R(1288, 976, 137, 28);
+            var voice = R(1427, 976, 28, 28);
+            var send = R(1461, 976, 28, 28);
+            Check($"empty chat at {scale * 96} DPI: attachments are not a model selector",
+                ComposerToolbarRules.IsModelCandidate(add, composer, default), false);
+            Check($"empty chat at {scale * 96} DPI: permissions are not a model selector",
+                ComposerToolbarRules.IsModelCandidate(permission, composer, default), false);
+            Check($"empty chat at {scale * 96} DPI: model works before Context exists",
+                ComposerToolbarRules.IsModelCandidate(model, composer, default), true);
+            var controls = new[] { add, permission, model, voice, send };
+            var leftRight = controls.Where(rect => ComposerToolbarRules.IsLeftClusterControl(
+                    "Button", rect, model, model.Top, model.Bottom))
+                .Max(rect => rect.Right);
+            Check($"empty chat at {scale * 96} DPI: right controls never consume left space",
+                leftRight, permission.Right);
+            Check($"empty chat at {scale * 96} DPI: display-contents wrapper is excluded",
+                ComposerToolbarRules.IsLeftClusterControl("Group", composer, model, model.Top, model.Bottom), false);
+            var snapshot = ComposerDockSnapshot.Empty with
+            {
+                Source = ComposerReferenceSource.UiaModel,
+                ReferenceRect = model,
+                RowRect = model,
+                ComposerRect = composer,
+                LeftClusterRect = new IntRect(composer.Left, model.Top, leftRight - composer.Left, model.Height)
+            };
+            var host = R(0, 0, 1920, 1032);
+            var dpi = (uint)(scale * 96);
+            var budget = OverlayLayoutCalculator.ResolveReferenceLeft(snapshot, host, dpi)
+                - 10 * scale - OverlayLayoutCalculator.ResolveStripLeftLimit(snapshot, host, dpi);
+            Check($"empty chat at {scale * 96} DPI: full waiting strip has room before first message",
+                budget >= 300 * scale, true);
+            var context = R(1268, 983, 17, 17);
+            Check($"existing chat at {scale * 96} DPI: model still resolves after Context appears",
+                ComposerToolbarRules.IsModelCandidate(model, composer, context), true);
+        }
+    }
+
     private static void RunComposerDock(TextWriter stdout)
     {
         _ = stdout;
+        RunEmptyChatToolbar();
 
         // The real composer at 150% scaling: window (308,244) 2048x1224, composer card (995,1292)
         // 1105x147, Context indicator (1708,1396) 25x25, model selector (1738,1385) 254x42.
@@ -729,12 +833,18 @@ internal static class SelfTest
         speed.BeginTurn("new-speeds", true, 1000, true);
         Check("new turn clears the peak", speed.PeakTps is null, true);
         Check("new turn clears its average", speed.AverageTps is null, true);
+        using var exited=new ManualResetEventSlim();var pipeName="CodexTokenGlass.Test."+Guid.NewGuid().ToString("N");
+        using(var channel=new LocalControl(()=>exited.Set(),pipeName))
+        {
+            Check("installer can request a graceful exit through an isolated current-user channel",LocalControl.RequestExit(pipeName),true);
+            Check("graceful-exit callback arrives without stopping a real app",exited.Wait(2000),true);
+        }
+
         using var modernFont = CodexUi.Font(11);
-        Check("bundled Inter actually loads without system installation", modernFont.FontFamily.Name.StartsWith("Inter"), true);
+        Check("UI uses the selected sans face", modernFont.FontFamily.Name.StartsWith("SF Pro") || modernFont.FontFamily.Name.StartsWith("Segoe UI"), true);
         using var chineseFont = CodexUi.FontForText("用量详情", 11);
-        if(FontFamily.Families.Any(f=>f.Name.Contains("YaHei",StringComparison.OrdinalIgnoreCase)))
-            Check("Chinese labels use a sans font instead of serif fallback", chineseFont.FontFamily.Name.Contains("YaHei", StringComparison.OrdinalIgnoreCase), true);
-        else Console.Out.WriteLine("  note: Chinese font-family check skipped; this Windows image has no YaHei font pack.");
+        Check("Chinese labels use a sans font instead of serif fallback", new[] { "PingFang", "苹方", "Noto Sans SC", "YaHei" }
+            .Any(name => chineseFont.FontFamily.Name.Contains(name, StringComparison.OrdinalIgnoreCase)), true);
         Check("focused composer remains a valid docking reference",
             ComposerDockTracker.IsComposerEditorClass("ProseMirror ProseMirror-focused"), true);
         Check("unrelated class is not a composer",
@@ -755,6 +865,11 @@ internal static class SelfTest
             100, 0, 1000, 10000, DateTime.UtcNow, TurnElapsedMs: 65_000);
         var presentation = OverlayPresentationBuilder.Create(snapshot, DisplayField.Tps, DisplayField.Total,
             DisplayFieldRules.SupportedMask);
+        Check("normal speed metrics cannot be replaced by waiting/status text", presentation.StatusText is null, true);
+        Check("compact strip omits long labels", presentation.CapsuleText!.Contains("≈") || presentation.CapsuleText.Contains("实时"), false);
+        Check("primary speed definition remains available in details", presentation.SpeedExplanation!.Contains(CodexUi.T("响应均速", "Response average")), true);
+        var distinctSpeeds = snapshot with { Tps = 3.5, AverageTps = 51.4 };
+        Check("compact strip uses the same response average as desktop", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds).Contains("51.4 tok/s"), true);
         Check("input details keep exact integers", presentation.ExpandedRows.Single(x => x.Field == DisplayField.Input).Value, "1,234,500");
         Check("uncached input excludes cached input", presentation.ExpandedRows.Single(x => x.Field == DisplayField.CacheMiss).Value, "234,500");
         Check("task duration appears in details", presentation.ExpandedRows.Single(x => x.Field == DisplayField.TurnDuration).Value, CodexUi.T("1 分 5 秒", "1m 5s"));
@@ -842,7 +957,8 @@ internal static class SelfTest
                 Math.Abs((settings.Top + settings.Height / 2d) - outerRadius) <= 1, true);
             Check($"{dpi} DPI: right corner and button share a horizontal center",
                 Math.Abs((settings.Right - settings.Height / 2d) - (panel.Right - outerRadius)) <= 1, true);
-            Check($"{dpi} DPI: hit region does not include square corner pixels", form.Region!.IsVisible(1, 1), false);
+            Check($"{dpi} DPI: hit region does not include square corner pixels", form.InputContainsClientPoint(new Point(1,1)), false);
+            Check($"{dpi} DPI: native region cannot hard-clip curved antialiased edges", form.Region!.IsVisible(1,1), true);
             using var image = form.RenderSurfaceBitmap(new Size(D(420), D(590)), dpi);
             Check($"{dpi} DPI: the rendered outer corner stays transparent", image.GetPixel(0, 0).A, (byte)0);
             var pixel=image.GetPixel(D(24),D(500));
@@ -852,18 +968,12 @@ internal static class SelfTest
             var overBlack=CodexUi.Mix(Color.Black,Color.FromArgb(pixel.R,pixel.G,pixel.B),pixel.A/255d);
             var overWhite=CodexUi.Mix(Color.White,Color.FromArgb(pixel.R,pixel.G,pixel.B),pixel.A/255d);
             Check($"{dpi} DPI: data labels retain contrast against both backdrop extremes",
-                Math.Min(Contrast(form.CurrentThemePalette.Label,overBlack),Contrast(form.CurrentThemePalette.Label,overWhite))>=4.5,true);
+                Math.Min(Contrast(form.DataLabelColor,overBlack),Contrast(form.DataLabelColor,overWhite))>=4.5,true);
         }
     }
 
     private static void RunContextSettings()
     {
-        using var exited=new ManualResetEventSlim();var pipeName="CodexTokenGlass.Test."+Guid.NewGuid().ToString("N");
-        using(var channel=new LocalControl(()=>exited.Set(),pipeName))
-        {
-            Check("installer can request a graceful exit through an isolated current-user channel",LocalControl.RequestExit(pipeName),true);
-            Check("graceful-exit callback arrives without stopping a real app",exited.Wait(2000),true);
-        }
         using var transparency=new SliderKeyboardProbe(OverlayThemePalette.For(OverlayThemeKind.Light)){Minimum=0,Maximum=100,Value=70};
         transparency.Key(Keys.Right);Check("transparency keyboard step is one percent",transparency.Value,71);
         transparency.Key(Keys.Home);Check("transparency keyboard reaches the minimum",transparency.Value,0);

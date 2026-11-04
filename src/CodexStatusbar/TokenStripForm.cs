@@ -137,17 +137,39 @@ internal sealed class TokenStripForm : Form
     private bool _textShadow;
     private bool _settingsHovered;
     private bool _settingsPressed;
+    private bool _statisticsHovered;
+    private bool _statisticsPressed;
     private Bitmap? _settingsIcon;
     private Color _settingsIconColor;
     private readonly ToolTip _settingsTip = new() { ShowAlways=true };
     private bool _backdropEnabled;
     private (Color Tint, bool Enabled)? _backdropRequest;
     private readonly LiquidBackdropRenderer _liquid = new();
-    private readonly System.Windows.Forms.Timer _liquidTimer = new() { Interval = 16 };
+    private readonly UiFrameClock _liquidTimer = new();
     private bool _liquidFrame;
     private bool _glassPressed;
     private Point _glassGrasp;
     private int _capsuleVariantIndex;
+    private long _lastSurfaceAudit;
+    internal int LastPresentError { get; private set; }
+    private long _lastPresentedAt;
+    private long _lastHealthPresentation;
+    internal void EnsureSurfacePresented()
+    {
+        if (!Visible || !IsHandleCreated || IsDisposed) return;
+        var now=Environment.TickCount64;
+        if (LastPresentError != 0 || now - _lastHealthPresentation > 2000)
+        {
+            _lastHealthPresentation=now;
+            RestorePopupLayer(force:true);UpdateLayeredSurface();DwmFlush();
+        }
+    }
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible) { _blittedPresentationVersion = -1; UpdateLayeredSurface(); }
+    }
+    private Region? _inputRegion;
 
     /// <summary>
     /// Bumped whenever something that affects the drawn pixels changes. It is the cache key for the
@@ -168,7 +190,7 @@ internal sealed class TokenStripForm : Form
     /// Regular at 13 DIP gives 170 px of ink against the 172 px measured on screen; Segoe UI Variable
     /// gives 167 and Segoe UI Semibold 182, so Regular is the match.
     /// </summary>
-    private const string StripFontFamily = "Segoe UI";
+    private static string StripFontFamily => CodexUi.FontName;
 
     public bool ClickToExpand { get; }
 
@@ -207,6 +229,7 @@ internal sealed class TokenStripForm : Form
 
     public event EventHandler? CapsuleClicked;
     public event EventHandler? SettingsRequested;
+    public event EventHandler? StatisticsRequested;
     public event EventHandler<OverlayEditPreviewEventArgs>? EditPreviewChanged;
     public event EventHandler<OverlayEditPreviewEventArgs>? EditGestureCompleted;
     public event EventHandler? EditSaveRequested;
@@ -216,6 +239,7 @@ internal sealed class TokenStripForm : Form
     public bool IsEditMode { get; private set; }
     internal OverlayPresentation CurrentPresentation => _presentation;
     internal OverlayThemePalette CurrentThemePalette => _palette;
+    internal Color DataLabelColor => CodexUi.Mix(_palette.Background,_palette.Value,.82);
 
     /// <summary>When <paramref name="value"/> is true the strip draws text only — no fill, no border.</summary>
     internal void SetTransparentBackground(bool value)
@@ -341,8 +365,7 @@ internal sealed class TokenStripForm : Form
     private int EffectiveScalePercent =>
         CurrentLayout?.ScalePercent ?? ManualAttachmentRules.DefaultScalePercent;
 
-    private static Font CreateStripFont(float points) =>
-        new(StripFontFamily, points, FontStyle.Regular, GraphicsUnit.Point);
+    private static Font CreateStripFont(float points) => CodexUi.Font(points);
 
     internal int SetBoundsCoreCallCount { get; private set; }
     internal bool IsEditGestureActive => _editGesture is not null;
@@ -567,12 +590,19 @@ internal sealed class TokenStripForm : Form
         return MoveWindowTo(layout.WindowBounds);
     }
 
-    internal void RestorePopupLayer()
+    internal void UseSyntheticBackdrop(Bitmap scene,uint dpi)
+    {
+        if(CurrentLayout is not {} layout)throw new InvalidOperationException("Apply the demo layout first");
+        _liquid.SetBackdrop(scene,layout.PanelBounds.ToRectangle(),dpi,motionOverride:false);
+        _liquid.SetButtonBounds(SettingsButtonBounds,scene.Size);
+    }
+
+    internal void RestorePopupLayer(bool force=false)
     {
         if(!IsHandleCreated || !Visible || IsDisposed)return;
         // WinForms modal dialogs may restore this no-activate window below its owner.
         // Reassert the native flag instead of the cached managed TopMost property.
-        if((GetWindowLongPtr(Handle,GwlExStyle).ToInt64() & 0x8)==0)
+        if(force || (GetWindowLongPtr(Handle,GwlExStyle).ToInt64() & 0x8)==0)
             SetWindowPos(Handle,new IntPtr(-1),0,0,0,0,SwpNoSize|0x2|SwpNoActivate);
     }
 
@@ -632,10 +662,8 @@ internal sealed class TokenStripForm : Form
     }
 
     /// <summary>
-    /// The window region doubles as the mouse hit region, which is how a locked strip stays
-    /// click-through outside the strip itself without needing <c>WS_EX_TRANSPARENT</c> (that would make
-    /// it un-clickable in edit mode too). Plain rectangles now — the rounded corners used to come from
-    /// the capsule fill, which no longer exists in the transparent presentation.
+    /// Hit-testing is independent of the rendered alpha. Assigning a rounded Form.Region cuts off
+    /// partial-alpha edge pixels in the fallback renderer and turns smooth curves into stair steps.
     /// </summary>
     private void ApplyInputRegion(OverlayLayoutResult layout)
     {
@@ -659,8 +687,13 @@ internal sealed class TokenStripForm : Form
             }
         }
 
-        Region?.Dispose();
-        Region = combined.PointCount == 0 ? null : new Region(combined);
+        _inputRegion?.Dispose();
+        _inputRegion = combined.PointCount == 0 ? null : new Region(combined);
+        // Keep an explicit rectangular native region so alpha-light whitespace remains clickable.
+        // It never intersects a curved visual edge; the separate hit region rejects empty corners.
+        var previous = Region;
+        Region = new Region(new Rectangle(0,0,layout.WindowBounds.Width,layout.WindowBounds.Height));
+        previous?.Dispose();
     }
 
     public void BeginEditMode(int scalePercent)
@@ -753,19 +786,21 @@ internal sealed class TokenStripForm : Form
         // Fonts are specified in points, and GDI+ resolves those against the Graphics DPI. The bitmap
         // must therefore carry the host DPI, or 150% scaling would render 100%-sized text.
         bitmap.SetResolution(dpi, dpi);
+        var statsBounds = StatisticsButtonBounds;
+        if (!statsBounds.IsEmpty) _liquid.Control(7001, statsBounds, statsBounds.Height / 2f, _statisticsHovered, _statisticsPressed);
         _liquidFrame = _liquid.RenderInto(bitmap, _palette.Background.GetBrightness() < .5);
         if (!_liquidFrame && CurrentLayout?.State == OverlayVisualState.Expanded) UpdateBackdrop();
         using var graphics = Graphics.FromImage(bitmap);
         ConfigureSurfaceGraphics(graphics);
+        // Per-pixel layered hit testing needs nonzero alpha across the clickable strip, including
+        // whitespace between digits. 1/255 alpha is visually transparent but keeps the full target.
+        if (ClickToExpand && CurrentLayout is { } hitLayout)
+        {
+            using var hitFill = new SolidBrush(Color.FromArgb(1,_palette.Background));
+            graphics.FillRectangle(hitFill,hitLayout.CapsuleBounds.ToRectangle());
+        }
         RenderSurface(graphics, size);
         return bitmap;
-    }
-
-    internal void UseSyntheticBackdrop(Bitmap scene,uint dpi)
-    {
-        if(CurrentLayout is not {} layout)throw new InvalidOperationException("Apply the demo layout first");
-        _liquid.SetBackdrop(scene,layout.PanelBounds.ToRectangle(),dpi,motionOverride:false);
-        _liquid.SetButtonBounds(SettingsButtonBounds,scene.Size);
     }
 
     private static void ConfigureSurfaceGraphics(Graphics graphics)
@@ -773,14 +808,14 @@ internal sealed class TokenStripForm : Form
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         // Grayscale, not ClearType. See the class remarks: sub-pixel filtering assumes an opaque
         // backdrop and would fringe against a per-pixel-alpha surface.
-        graphics.TextRenderingHint = TextRenderingHint.AntiAlias;
+        graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         graphics.CompositingMode = CompositingMode.SourceOver;
         graphics.CompositingQuality = CompositingQuality.HighQuality;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
     }
 
-    public bool ContainsScreenPoint(Point screenPoint) =>
-        CurrentLayout?.ContainsScreenPoint(screenPoint) == true;
+    internal bool InputContainsClientPoint(Point point) => _inputRegion?.IsVisible(point) == true;
+    public bool ContainsScreenPoint(Point screenPoint) => InputContainsClientPoint(PointToClient(screenPoint));
 
     protected override void SetBoundsCore(
         int x,
@@ -817,8 +852,7 @@ internal sealed class TokenStripForm : Form
                     unchecked((short)(packed & 0xffff)),
                     unchecked((short)((packed >> 16) & 0xffff)));
                 var clientPoint = PointToClient(screenPoint);
-                if (!CurrentLayout.CapsuleBounds.Contains(clientPoint.X, clientPoint.Y)
-                    && !CurrentLayout.PanelBounds.Contains(clientPoint.X, clientPoint.Y))
+                if (!InputContainsClientPoint(clientPoint))
                 {
                     message.Result = (IntPtr)HtTransparent;
                     return;
@@ -832,6 +866,11 @@ internal sealed class TokenStripForm : Form
     protected override void OnMouseDown(MouseEventArgs eventArgs)
     {
         base.OnMouseDown(eventArgs);
+        if (!IsEditMode && eventArgs.Button == MouseButtons.Left && StatisticsButtonBounds.Contains(eventArgs.Location))
+        {
+            _statisticsPressed = true; Capture = true; InvalidateSurface(); _liquidTimer.Start();
+            return;
+        }
         if (!IsEditMode && eventArgs.Button==MouseButtons.Left && SettingsButtonBounds.Contains(eventArgs.Location))
         {
             _settingsPressed=true;_liquid.ButtonState(true,true);_liquidTimer.Start();Capture=true;
@@ -857,13 +896,16 @@ internal sealed class TokenStripForm : Form
             _liquidTimer.Start();
         }
         var hovering = SettingsButtonBounds.Contains(eventArgs.Location);
+        var statisticsHovering = StatisticsButtonBounds.Contains(eventArgs.Location);
+        if (statisticsHovering != _statisticsHovered)
+        { _statisticsHovered = statisticsHovering; InvalidateSurface(); _liquidTimer.Start(); }
         if (hovering != _settingsHovered)
         {
             _settingsHovered = hovering;_liquid.ButtonState(hovering,_settingsPressed);_liquidTimer.Start();InvalidateSurface();
             if(hovering) _settingsTip.Show(CodexUi.T("设置","Settings"),this,SettingsButtonBounds.Left-8,SettingsButtonBounds.Bottom+8,1200);
             else _settingsTip.Hide(this);
         }
-        if (!IsEditMode) Cursor = hovering || CurrentLayout?.CapsuleBounds.Contains(eventArgs.X, eventArgs.Y) == true
+        if (!IsEditMode) Cursor = hovering || StatisticsButtonBounds.Contains(eventArgs.Location) || CurrentLayout?.CapsuleBounds.Contains(eventArgs.X, eventArgs.Y) == true
             ? Cursors.Hand : Cursors.Default;
         HandleMouseMove(eventArgs.Location, PointToScreen(eventArgs.Location));
     }
@@ -871,6 +913,7 @@ internal sealed class TokenStripForm : Form
     protected override void OnMouseUp(MouseEventArgs eventArgs)
     {
         base.OnMouseUp(eventArgs);
+        if (_statisticsPressed) { _statisticsPressed = false; Capture = false; InvalidateSurface(); _liquidTimer.Start(); }
         if (_settingsPressed) {_settingsPressed=false;Capture=false;_liquid.ButtonState(_settingsHovered,false);_liquidTimer.Start();}
         if (_glassPressed)
         {
@@ -885,6 +928,7 @@ internal sealed class TokenStripForm : Form
     protected override void OnMouseCaptureChanged(EventArgs eventArgs)
     {
         base.OnMouseCaptureChanged(eventArgs);
+        if (!Capture && _statisticsPressed) { _statisticsPressed = false; InvalidateSurface(); }
         if(!Capture && _settingsPressed)
         {_settingsPressed=false;_liquid.ButtonState(_settingsHovered,false);_liquidTimer.Start();}
         if (!Capture && _glassPressed)
@@ -977,6 +1021,11 @@ internal sealed class TokenStripForm : Form
             return;
         }
 
+        if (!IsEditMode && StatisticsButtonBounds.Contains(clientPoint))
+        {
+            StatisticsRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
         if (!IsEditMode && SettingsButtonBounds.Contains(clientPoint))
         {
             SettingsRequested?.Invoke(this, EventArgs.Empty);
@@ -1092,16 +1141,29 @@ internal sealed class TokenStripForm : Form
             : (uint)Math.Max(96, DeviceDpi);
 
         using var bitmap = RenderSurfaceBitmap(size, dpi);
-        BlitLayeredSurface(bitmap, size);
-        _blittedPresentationVersion = _presentationVersion;
+        if (BlitLayeredSurface(bitmap, size))
+        { _blittedPresentationVersion = _presentationVersion; _lastPresentedAt = Environment.TickCount64; }
+        var audit = Environment.GetEnvironmentVariable("CODEX_STATUSBAR_RENDER_AUDIT");
+        if (!string.IsNullOrEmpty(audit) && Environment.TickCount64 - _lastSurfaceAudit > 1000)
+        {
+            _lastSurfaceAudit = Environment.TickCount64;
+            Directory.CreateDirectory(audit);
+            bitmap.Save(Path.Combine(audit,"live-surface.png"),ImageFormat.Png);
+            File.WriteAllText(Path.Combine(audit,"live-surface.json"),System.Text.Json.JsonSerializer.Serialize(new {
+                error=LastPresentError,text=CurrentCapsuleVariantText,window=Bounds,capsule=CurrentLayout?.CapsuleBounds,
+                font=StripFontFamily,points=StripFontPoints,dpi,backdrop=_backdropEnabled,glass=_liquid.Ready,
+                gpu=_liquid.GpuAccelerated,glassError=_liquid.LastError
+            }));
+        }
     }
 
-    private void BlitLayeredSurface(Bitmap bitmap, Size size)
+    private bool BlitLayeredSurface(Bitmap bitmap, Size size)
     {
         var screenDc = GetDC(IntPtr.Zero);
         if (screenDc == IntPtr.Zero)
         {
-            return;
+            LastPresentError = Marshal.GetLastWin32Error();
+            return false;
         }
 
         var memoryDc = CreateCompatibleDC(screenDc);
@@ -1119,7 +1181,7 @@ internal sealed class TokenStripForm : Form
                 SourceConstantAlpha = 255,
                 AlphaFormat = AcSrcAlpha
             };
-            _ = UpdateLayeredWindow(
+            var success = UpdateLayeredWindow(
                 Handle,
                 screenDc,
                 ref destination,
@@ -1129,6 +1191,8 @@ internal sealed class TokenStripForm : Form
                 0,
                 ref blend,
                 UlwAlpha);
+            LastPresentError = success ? 0 : Marshal.GetLastWin32Error();
+            return success;
         }
         finally
         {
@@ -1222,7 +1286,9 @@ internal sealed class TokenStripForm : Form
         {
             // Layered windows pass alpha-zero pixels through. Keep the whole text strip clickable,
             // including spaces, without introducing a visible capsule or taking keyboard focus.
-            using var hitSurface = new SolidBrush(Color.FromArgb(1, _palette.Value));
+            // Very low alpha may be quantized away by the Windows hit-test surface. A theme-matched
+            // 12.5% wash is visually neutral on the composer and keeps inter-word gaps clickable.
+            using var hitSurface = new SolidBrush(Color.FromArgb(32, _palette.Background));
             graphics.FillRectangle(hitSurface, bounds);
         }
 
@@ -1381,10 +1447,19 @@ internal sealed class TokenStripForm : Form
         }
         var left=bounds.Left+D(24);var width=bounds.Width-D(48);
         DrawAlignedText(graphics,CodexUi.T("Codex 用量","Codex usage"),headerFont,
-            new Rectangle(left,bounds.Top+D(20),width-D(56),D(26)),_palette.Value,TextAlignment.Near,false);
-        DrawAlignedText(graphics,CodexUi.T("此对话 · 用量与性能","This conversation · usage & performance"),labelFont,
-            new Rectangle(left,bounds.Top+D(51),width,D(20)),_palette.Label,TextAlignment.Near,false);
+            new Rectangle(left,bounds.Top+D(16),width-D(140),D(32)),_palette.Value,TextAlignment.Near,false);
+        DrawAlignedText(graphics,_presentation.SpeedExplanation ?? CodexUi.T("此对话 · 用量与性能","This conversation · usage & performance"),labelFont,
+            new Rectangle(left,bounds.Top+D(52),width,D(24)),_palette.Label,TextAlignment.Near,false);
         DrawSettingsGlyph(graphics,SettingsButtonBounds);
+        if (!_liquidFrame)
+        {
+            using var shape = CreateRoundedRectanglePath(StatisticsButtonBounds, D(22));
+            using var fill = new SolidBrush(Color.FromArgb(_statisticsHovered ? 200 : 150, _palette.Background));
+            graphics.FillPath(fill, shape);
+            using var outline = new Pen(Color.FromArgb(40, _palette.Value), 1);
+            graphics.DrawPath(outline, shape);
+        }
+        DrawAlignedText(graphics,CodexUi.T("统计", "Stats"),labelFont,StatisticsButtonBounds,_palette.Value,TextAlignment.Center,false);
 
         var heroWidth=(width-D(20))/2;
         DrawHero(graphics,_presentation.Primary,new Rectangle(left,bounds.Top+D(82),heroWidth,D(66)),labelFont,layout.ScalePercent);
@@ -1403,9 +1478,10 @@ internal sealed class TokenStripForm : Form
                 new Rectangle(r.Left+r.Width/3,r.Top,r.Width*2/3-D(10),r.Height),_palette.Value,TextAlignment.Far,false);
         }
         Chip(DisplayField.PeakSpeed,"峰值","Peak",left);
-        Chip(DisplayField.AverageSpeed,"平均","Average",left+chipWidth+D(10));
+        Chip(DisplayField.Tps,_presentation.LiveReadingHeld?"上次文本":"实时估算",
+            _presentation.LiveReadingHeld?"Last text":"Live est.",left+chipWidth+D(10));
 
-        var rows=_presentation.ExpandedRows.Where(r=>r.Field is not DisplayField.PeakSpeed and not DisplayField.AverageSpeed).ToList();
+        var rows=_presentation.ExpandedRows.Where(r=>r.Field is not DisplayField.PeakSpeed and not DisplayField.AverageSpeed and not DisplayField.Tps).ToList();
         if(_presentation.Secondary.Field==DisplayField.Total && rows.All(r=>r.Field!=DisplayField.Total))rows.Insert(0,_presentation.Secondary);
         int Group(OverlayMetric r)=>r.Field switch
         {
@@ -1418,7 +1494,7 @@ internal sealed class TokenStripForm : Form
         var top=bounds.Bottom-D(12)-rows.Count*rowHeight-breaks*gap;
         var plate=new Rectangle(bounds.Left+D(12),top-D(4),bounds.Width-D(24),bounds.Bottom-D(12)-top+D(4));
         using(var shape=CreateRoundedRectanglePath(plate,Math.Max(0,metrics.PanelRadius-D(12))))
-        using(var fill=new SolidBrush(Color.FromArgb(245-CodexUi.GlassTransparency/2,_palette.Background)))graphics.FillPath(fill,shape);
+        using(var fill=new SolidBrush(Color.FromArgb(GlassAppearance.ReadingPlateAlpha(CodexUi.GlassTransparency),_palette.Background)))graphics.FillPath(fill,shape);
         for(var i=0;i<rows.Count;i++)
         {
             if(i>0 && Group(rows[i])!=Group(rows[i-1]))
@@ -1429,6 +1505,9 @@ internal sealed class TokenStripForm : Form
             DrawExpandedRow(graphics,rows[i],new Rectangle(plate.Left+D(16),top,plate.Width-D(32),rowHeight),labelFont,valueFont);
             top+=rowHeight;
         }
+        // A narrow, crisp vector rim defines the contour independently of the softer optical glow.
+        using(var rim=CreateRoundedRectanglePath(Rectangle.Inflate(bounds,-1,-1),Math.Max(1,metrics.PanelRadius-1)))
+        using(var pen=new Pen(Color.FromArgb(30,_palette.Value),Math.Max(.75f,(float)unit*.75f)))graphics.DrawPath(pen,rim);
     }
 
     private void DrawHero(Graphics g,OverlayMetric metric,Rectangle bounds,Font label,int scale)
@@ -1440,7 +1519,8 @@ internal sealed class TokenStripForm : Form
             text=MetricFormat.CompactTokens(number);
         else if(text.EndsWith(" tok/s",StringComparison.Ordinal)){text=text[..^6];unit="tok/s";}
         using var numberFont=CodexUi.Font((text.Length>7?22:28)*scale/100f,semibold:true);
-        DrawAlignedText(g,metric.ExpandedLabel,label,new Rectangle(bounds.Left,bounds.Top,bounds.Width,D(20)),
+        var heroLabel = metric.Field == DisplayField.Tps ? CodexUi.T("可见文本速度", "Visible-text speed") : metric.ExpandedLabel;
+        DrawAlignedText(g,heroLabel,label,new Rectangle(bounds.Left,bounds.Top,bounds.Width,D(20)),
             CodexUi.Mix(_palette.Background,_palette.Value,.85),TextAlignment.Near,false);
         var valueRect=new Rectangle(bounds.Left,bounds.Top+D(20),bounds.Width,D(46));
         DrawAlignedText(g,text,numberFont,valueRect,_palette.Value,TextAlignment.Near,false);
@@ -1454,11 +1534,23 @@ internal sealed class TokenStripForm : Form
     }
 
     internal Rectangle SettingsButtonBounds=>CurrentLayout is {} layout?GetSettingsButtonBounds(layout):Rectangle.Empty;
+    private Rectangle StatisticsButtonBounds
+    {
+        get
+        {
+            var gear = SettingsButtonBounds;
+            if (gear.IsEmpty) return Rectangle.Empty;
+            var width = (int)Math.Round(gear.Width * 1.75);
+            var gap = (int)Math.Round(gear.Width / 6d);
+            return new Rectangle(gear.Left - width - gap, gear.Top + (int)Math.Round(gear.Height / 24d), width, (int)Math.Round(gear.Height * 22d / 24d));
+        }
+    }
     private static Rectangle GetSettingsButtonBounds(OverlayLayoutResult layout)
     {
         if(layout.PanelBounds.IsEmpty)return Rectangle.Empty;
         var unit=layout.Dpi/96d*layout.ScalePercent/100d;
-        var side=(int)Math.Round(44*unit);var inset=(int)Math.Round(10*unit);
+        // Outer radius 32, button radius 26: keep their centers concentric.
+        var side=(int)Math.Round(52*unit);var inset=(int)Math.Round(6*unit);
         var panel=layout.PanelBounds;
         return new Rectangle(panel.Right-inset-side,panel.Top+inset,side,side);
     }
@@ -1471,23 +1563,34 @@ internal sealed class TokenStripForm : Form
             graphics.FillEllipse(ring,bounds);
             using var line=new Pen(Color.FromArgb(25,_palette.Value),1);graphics.DrawEllipse(line,bounds);
         }
-        var size=(int)Math.Round(bounds.Width*22d/44d);
-        if(_settingsIcon is null || _settingsIcon.Width!=size || _settingsIconColor!=_palette.Value)
+        else
+        {
+            var circle=RectangleF.Inflate(bounds,-.75f,-.75f);
+            using var line=new Pen(Color.FromArgb(_settingsHovered?65:40,_palette.Value),.85f);
+            graphics.DrawEllipse(line,circle);
+        }
+        var size=(int)Math.Round(bounds.Width/2d);
+        var rasterSize = size * 4;
+        if(_settingsIcon is null || _settingsIcon.Width!=rasterSize || _settingsIconColor!=_palette.Value)
         {
             _settingsIcon?.Dispose();_settingsIconColor=_palette.Value;
-            using var raster=new SKBitmap(size,size,SKColorType.Bgra8888,SKAlphaType.Premul);
+            using var raster=new SKBitmap(rasterSize,rasterSize,SKColorType.Bgra8888,SKAlphaType.Premul);
             using(var canvas=new SKCanvas(raster))
             {
-                canvas.Clear(SKColors.Transparent);canvas.Scale(size/24f);
+                canvas.Clear(SKColors.Transparent);canvas.Scale(rasterSize/24f);
                 using var paint=new SKPaint{Style=SKPaintStyle.Stroke,StrokeWidth=1.8f,IsAntialias=true,
                     StrokeCap=SKStrokeCap.Round,StrokeJoin=SKStrokeJoin.Round,
                     Color=new SKColor(_palette.Value.R,_palette.Value.G,_palette.Value.B)};
                 using var path=SKPath.ParseSvgPathData("M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915");canvas.DrawPath(path,paint);canvas.DrawCircle(12,12,3,paint);
             }
-            using var bridge=new Bitmap(size,size,raster.RowBytes,PixelFormat.Format32bppPArgb,raster.GetPixels());
+            using var bridge=new Bitmap(rasterSize,rasterSize,raster.RowBytes,PixelFormat.Format32bppPArgb,raster.GetPixels());
             _settingsIcon=new Bitmap(bridge);
         }
-        graphics.DrawImageUnscaled(_settingsIcon,bounds.Left+(bounds.Width-size)/2,bounds.Top+(bounds.Height-size)/2);
+        var oldInterpolation = graphics.InterpolationMode;
+        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        graphics.DrawImage(_settingsIcon, new Rectangle(bounds.Left+(bounds.Width-size)/2,bounds.Top+(bounds.Height-size)/2,size,size),
+            0,0,rasterSize,rasterSize,GraphicsUnit.Pixel);
+        graphics.InterpolationMode = oldInterpolation;
     }
 
     private void DrawCompactMetric(
@@ -1554,20 +1657,27 @@ internal sealed class TokenStripForm : Form
         Font labelFont,
         Font valueFont)
     {
-        var labelWidth = Math.Max(0, bounds.Width / 2);
-        DrawAlignedText(
-            graphics,
-            metric.ExpandedLabel,
-            labelFont,
-            new Rectangle(bounds.Left, bounds.Top, labelWidth, bounds.Height),
-            _palette.Label,
-            TextAlignment.Near,
-            shadow: false);
+        // Reserve the actual value width, not an arbitrary half-column. Long Chinese context labels
+        // then receive the remaining room and can wrap instead of disappearing behind the value.
+        var gap = (int)Math.Ceiling(12 * graphics.DpiX / 96d);
+        var valueWidth = MeasureWidth(graphics,metric.Value,valueFont)+gap;
+        var labelWidth = Math.Max(0,bounds.Width-valueWidth-gap);
+        using var localized = CodexUi.FontForText(metric.ExpandedLabel,labelFont.Size);
+        if (MeasureWidth(graphics,metric.ExpandedLabel,localized) <= labelWidth)
+            DrawAlignedText(graphics,metric.ExpandedLabel,localized,new Rectangle(bounds.Left,bounds.Top,labelWidth,bounds.Height),
+                DataLabelColor,TextAlignment.Near,false);
+        else
+        {
+            using var smaller=CodexUi.FontForText(metric.ExpandedLabel,Math.Max(8.5f,labelFont.Size-1));
+            using var brush=new SolidBrush(DataLabelColor);
+            using var wrap=new StringFormat{LineAlignment=StringAlignment.Center,Trimming=StringTrimming.None};
+            graphics.DrawString(metric.ExpandedLabel,smaller,brush,new Rectangle(bounds.Left,bounds.Top,labelWidth,bounds.Height),wrap);
+        }
         DrawAlignedText(
             graphics,
             metric.Value,
             valueFont,
-            new Rectangle(bounds.Left + labelWidth, bounds.Top, bounds.Width - labelWidth, bounds.Height),
+            new Rectangle(bounds.Right-valueWidth,bounds.Top,valueWidth,bounds.Height),
             ValueColorFor(metric),
             TextAlignment.Far,
             shadow: false);
@@ -1603,7 +1713,7 @@ internal sealed class TokenStripForm : Form
     {
         using var format = CreateFormat(alignment);
         using var localizedFont = text.Any(c => c is >= '\u2e80' and <= '\u9fff')
-            ? CodexUi.FontForText(text, font.Size, font.Bold || font.FontFamily.Name.Contains("Semi", StringComparison.OrdinalIgnoreCase)) : null;
+            ? CodexUi.FontForText(text, font.Size, CodexUi.IsEmphasized(font)) : null;
         font = localizedFont ?? font;
 
         if (shadow)
@@ -1628,6 +1738,7 @@ internal sealed class TokenStripForm : Form
         }
 
         using var brush = new SolidBrush(color);
+        if(AppleText.Draw(graphics,text,font,bounds,color,format.Alignment,format.LineAlignment))return;
         graphics.DrawString(text, font, brush, bounds, format);
     }
 
@@ -1712,10 +1823,12 @@ internal sealed class TokenStripForm : Form
     private static double MeasureStripLine(Graphics graphics, string text, Font textFont, Font iconFont)
     {
         var (icon, body) = SplitLeadingIcon(text);
+        using var localized = body.Any(c => c is >= '\u2e80' and <= '\u9fff') ? CodexUi.FontForText(body,textFont.Size,CodexUi.IsEmphasized(textFont)) : null;
+        textFont = localized ?? textFont;
         using var format = CreateFormat(TextAlignment.Near);
         if (icon.Length == 0)
         {
-            return graphics.MeasureString(text, textFont, new SizeF(8192f, 512f), format).Width;
+            return AppleText.Measure(graphics,text,textFont) ?? graphics.MeasureString(text, textFont, new SizeF(8192f, 512f), format).Width;
         }
 
         return graphics.MeasureString(icon, iconFont, new SizeF(512f, 512f), format).Width
@@ -1772,6 +1885,9 @@ internal sealed class TokenStripForm : Form
 
     private static int MeasureWidth(Graphics graphics, string text, Font font)
     {
+        using var localized = text.Any(c => c is >= '\u2e80' and <= '\u9fff') ? CodexUi.FontForText(text,font.Size,CodexUi.IsEmphasized(font)) : null;
+        font = localized ?? font;
+        var nativeWidth=AppleText.Measure(graphics,text,font);if(nativeWidth.HasValue)return (int)Math.Ceiling(nativeWidth.Value);
         using var format = CreateFormat(TextAlignment.Near);
         return (int)Math.Ceiling(
             graphics.MeasureString(text, font, new SizeF(4096f, 4096f), format).Width);
@@ -1810,11 +1926,13 @@ internal sealed class TokenStripForm : Form
             CancelEditGesture();
             Region?.Dispose();
             Region = null;
+            _inputRegion?.Dispose(); _inputRegion = null;
         }
         base.Dispose(disposing);
     }
 
     private const int GwlExStyle = -20;
+    [DllImport("dwmapi.dll")] private static extern int DwmFlush();
 
     // SetWindowPos flags used by the position fast path. The combination is deliberate: see
     // MoveWindowTo. Not one of them changes Z-order, activation, focus or ownership.

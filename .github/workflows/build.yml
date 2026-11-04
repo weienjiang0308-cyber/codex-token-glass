@@ -18,6 +18,9 @@ jobs:
       - name: Build and run synthetic tests
         shell: pwsh
         run: ./build.ps1
+      - name: Verify speed and usage statistics
+        shell: pwsh
+        run: dotnet run --project tests/SpeedMetrics.Tests/SpeedMetrics.Tests.csproj -c Release
       - uses: actions/upload-artifact@v4
         with:
           name: CodexTokenGlass-win-x64

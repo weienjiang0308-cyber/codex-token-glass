@@ -17,7 +17,9 @@ internal sealed record OverlayPresentation(
     bool ShowContextProgress,
     string? StatusText,
     string? CapsuleText = null,
-    IReadOnlyList<string>? CapsuleVariants = null)
+    IReadOnlyList<string>? CapsuleVariants = null,
+    string? SpeedExplanation = null,
+    bool LiveReadingHeld = false)
 {
     /// <summary>
     /// The collapsed strip's text at every supported verbosity, widest first. The last entry is the
@@ -43,7 +45,7 @@ internal static class OverlayPresentationBuilder
     private const string Separator = " · ";
 
     /// <summary>The collapsed strip before any conversation is known.</summary>
-    public const string WaitingCapsuleText = "⚡ -- tok/s · -- tok · Cache --";
+    public const string WaitingCapsuleText = "Speed — · Tokens — · Cache hit —";
 
     /// <summary>
     /// The strip's verbosity ladder, widest first. Level 0 is what the user sees at normal widths —
@@ -89,7 +91,7 @@ internal static class OverlayPresentationBuilder
             false,
             SanitizeSingleLine(statusText),
             WaitingCapsuleText,
-            BuildCapsuleVariants("--", "--", "--", hasUsage: false));
+            [WaitingCapsuleText, "-- t/s"]);
     }
 
     public static OverlayPresentation Create(
@@ -113,7 +115,9 @@ internal static class OverlayPresentationBuilder
             (visibleFields & DisplayField.ContextPercent) != 0,
             null,
             BuildCapsuleVariants(snapshot)[0],
-            BuildCapsuleVariants(snapshot));
+            BuildCapsuleVariants(snapshot),
+            CodexUi.T($"响应均速 · 已计时 {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} 个响应",
+                $"Response average · {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} timed"), snapshot.TpsHeld);
     }
 
     public static string FormatTokenCount(long value) => value switch
@@ -159,12 +163,12 @@ internal static class OverlayPresentationBuilder
             DisplayField.ContextPercent => "上下文百分比",
             DisplayField.Reasoning => "推理输出",
             DisplayField.Thread => "会话 ID",
-            DisplayField.Tps => "输出速度 TPS",
+            DisplayField.Tps => "可见文本实时估算",
             DisplayField.TurnDuration => "本轮任务用时",
             DisplayField.ModelTime => "本轮模型生成用时",
             DisplayField.FirstTokenTime => "首 token 等待时间",
             DisplayField.PeakSpeed => "本轮峰值响应速度",
-            DisplayField.AverageSpeed => "本轮平均生成速度",
+            DisplayField.AverageSpeed => "已计时响应平均速度",
             _ => throw new ArgumentOutOfRangeException(nameof(field), field, "不支持的展示字段。")
         };
     }
@@ -181,11 +185,14 @@ internal static class OverlayPresentationBuilder
     public static IReadOnlyList<string> BuildCapsuleVariants(TokenSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        return BuildCapsuleVariants(
-            MetricFormat.FormatTps(snapshot.Tps, snapshot.TpsHeld),
-            MetricFormat.CompactTokens(snapshot.InputTokens + snapshot.OutputTokens),
-            MetricFormat.FormatCachePercentCompact(snapshot.InputTokens, snapshot.CachedInputTokens),
-            snapshot.HasUsage);
+        var live = snapshot.AverageTps is double rate ? rate.ToString("0.0", CultureInfo.InvariantCulture) : "--";
+        var total = snapshot.HasUsage ? MetricFormat.CompactTokens(snapshot.InputTokens + snapshot.OutputTokens) : "--";
+        var cache = snapshot.HasUsage ? MetricFormat.FormatCachePercentCompact(snapshot.InputTokens, snapshot.CachedInputTokens) : "--";
+        // One invariant primary metric, identical to the desktop meter: completed-response average.
+        // Visible-text estimates are separately named in the expanded panel.
+        return [$"Speed {live} tok/s · Tokens {total} · Cache hit {cache}",
+            $"{live} tok/s · {total} tokens · Cache hit {cache}",
+            $"{live} t/s · {total} tok · Hit {cache}"];
     }
 
     /// <summary>The widest variant — what the strip shows whenever there is room for it.</summary>
@@ -242,7 +249,7 @@ internal static class OverlayPresentationBuilder
             DisplayField.ModelTime => FormatDuration(snapshot.MergedModelElapsedMs > 0 ? snapshot.MergedModelElapsedMs : null),
             DisplayField.FirstTokenTime => FormatDuration(snapshot.TtftMs is double ttft ? (long)ttft : null),
             DisplayField.PeakSpeed => MetricFormat.FormatTps(snapshot.PeakTps, false) + " tok/s",
-            DisplayField.AverageSpeed => MetricFormat.FormatTps(snapshot.AverageTps, false) + " tok/s",
+            DisplayField.AverageSpeed => MetricFormat.FormatTpsFloat(snapshot.AverageTps) + " tok/s",
             _ => throw new ArgumentOutOfRangeException(nameof(field), field, "不支持的展示字段。")
         };
         var hasValue = field != DisplayField.Thread || !string.IsNullOrWhiteSpace(snapshot.ThreadId);
@@ -265,12 +272,12 @@ internal static class OverlayPresentationBuilder
                 DisplayField.ContextPercent => ("Context", "Context used"),
                 DisplayField.Reasoning => ("Reasoning", "Reasoning tokens"),
                 DisplayField.Thread => ("Thread", "Conversation"),
-                DisplayField.Tps => ("⚡", "Output speed"),
+                DisplayField.Tps => ("Est≈", "Visible text · live estimate (2 s)"),
                 DisplayField.TurnDuration => ("Elapsed", "Task elapsed"),
-                DisplayField.ModelTime => ("Generation", "Model generation"),
+                DisplayField.ModelTime => ("Timed", "Timed completed-response duration"),
                 DisplayField.FirstTokenTime => ("First token", "Time to first token"),
                 DisplayField.PeakSpeed => ("Peak", "Peak response speed"),
-                DisplayField.AverageSpeed => ("Average", "Average output speed"),
+                DisplayField.AverageSpeed => ("Average", "Completed-response average"),
                 _ => throw new ArgumentOutOfRangeException(nameof(field))
             };
         }
@@ -286,19 +293,19 @@ internal static class OverlayPresentationBuilder
             DisplayField.ContextPercent => ("上下文", "上下文占用"),
             DisplayField.Reasoning => ("推理", "推理输出"),
             DisplayField.Thread => ("会话", "会话"),
-            DisplayField.Tps => ("⚡", "输出速度"),
+            DisplayField.Tps => ("实时估算", "可见文本实时估算（2 秒）"),
             DisplayField.TurnDuration => ("用时", "本轮任务用时"),
-            DisplayField.ModelTime => ("生成", "本轮模型生成"),
+            DisplayField.ModelTime => ("计时", "已完成响应计时总和"),
             DisplayField.FirstTokenTime => ("首字", "首 token 等待"),
             DisplayField.PeakSpeed => ("峰值", "本轮峰值响应速度"),
-            DisplayField.AverageSpeed => ("平均", "本轮平均生成速度"),
+            DisplayField.AverageSpeed => ("平均", "已计时响应平均速度"),
             _ => throw new ArgumentOutOfRangeException(nameof(field), field, "不支持的展示字段。")
         };
     }
 
     /// <summary>TPS cell used by the expanded panel and the tray menu: e.g. "243 tok/s", "-- tok/s".</summary>
     private static string FormatTpsValue(TokenSnapshot snapshot) =>
-        MetricFormat.FormatTps(snapshot.Tps, snapshot.TpsHeld) + " tok/s";
+        (snapshot.Tps is double speed ? "≈" + speed.ToString("0.0", CultureInfo.InvariantCulture) : "—") + " tok/s";
 
     private static string ExactTokens(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 

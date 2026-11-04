@@ -42,6 +42,10 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     private readonly ToolStripMenuItem _detailMenuItem;
     private readonly LocalControl _localControl;
     private SettingsForm? _settingsForm;
+    private StatisticsForm? _statisticsForm;
+    private readonly UsageStatisticsService _statistics;
+    private ToolStripMenuItem _apiValueMenu = null!;
+    private StatisticsSnapshot? _displayedStatistics;
     private readonly Dictionary<AttachmentReferencePoint, ToolStripMenuItem> _anchorPointItems = new();
     private readonly Dictionary<OverlayPositionMode, ToolStripMenuItem> _positionModeItems = new();
     private readonly Dictionary<OverlayThemePreference, ToolStripMenuItem> _themeItems = new();
@@ -109,6 +113,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     private ManualPlacementSnapshot? _settingsSnapshotBeforeEdit;
     private bool _saveFailureNotified;
     private TokenSnapshot? _lastSnapshot;
+    private bool _waitingForConversation;
     private bool _manuallyHidden;
     private int _pollInFlight;
     private int _disposed;
@@ -138,6 +143,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _positionDiagnostics = positionDiagnostics;
         _modeLabel = background ? "background" : "interactive";
         _sessionRoot = sessionRoot;
+        _statistics = new UsageStatisticsService(sessionRoot);
         _executablePath = StartupCommandLine.ResolveExecutablePath();
 
         _settings = OverlaySettings.Load(_settingsPath);
@@ -177,7 +183,9 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             new WindowsOverlayThemeSource(),
             ApplyTheme);
 
-        var menu = new ContextMenuStrip();
+        var menu = new ContextMenuStrip { Font = CodexUi.FontForText(CodexUi.English ? "Menu" : "菜单",10) };
+        _apiValueMenu = new ToolStripMenuItem("API 等值 · 读取中") { Enabled = false };
+        menu.Items.Add(_apiValueMenu);
 
         // Lifecycle status first: with the watcher running these two lines answer "is Codex up, and is
         // the strip attached to it" without opening the debug log.
@@ -327,6 +335,9 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _detailMenuItem = new ToolStripMenuItem("详情面板  ·  展开 / 收起");
         _detailMenuItem.Click += (_, _) => ToggleDetailPanel();
         menu.Items.Add(_detailMenuItem);
+        var statisticsItem = new ToolStripMenuItem("Statistics · 用量统计…");
+        statisticsItem.Click += (_, _) => OpenStatistics();
+        menu.Items.Add(statisticsItem);
         var settingsItem = new ToolStripMenuItem(CodexUi.T("设置…", "Settings…"));
         settingsItem.Click += (_, _) => OpenSettings();
         menu.Items.Add(settingsItem);
@@ -387,6 +398,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _form.SetTextShadow(_settings.TextShadow);
         _form.CapsuleClicked += HandleCapsuleClicked;
         _form.SettingsRequested += (_, _) => OpenSettings();
+        _form.StatisticsRequested += (_, _) => OpenStatistics();
         _form.EditPreviewChanged += HandleEditPreviewChanged;
         _form.EditGestureCompleted += HandleEditGestureCompleted;
         _form.EditSaveRequested += (_, _) => SaveManualEditing();
@@ -415,6 +427,15 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         {
             if(!_targetHighlight.IsDisposed)_targetHighlight.BeginInvoke((Action)ExitOverlay);
         });
+    }
+
+    private void OpenStatistics()
+    {
+        CollapseAndHide();
+        if (_statisticsForm is null || _statisticsForm.IsDisposed)
+            _statisticsForm = new StatisticsForm(_statistics, () => _lastSnapshot, () => CodexUi.Palette(_effectiveTheme));
+        _statisticsForm.Show();
+        _statisticsForm.Activate();
     }
 
     private void AddAnchorMenu(ToolStripMenuItem menu, string text, AnchorMode mode)
@@ -1358,6 +1379,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         }
 
         RequestBackgroundPoll();
+        _form.EnsureSurfacePresented();
 
         // Codex's appearance setting can be changed while the overlay runs; the source caches the
         // config read, so this polls cheaply about every ten seconds.
@@ -1370,6 +1392,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         if (_pendingRouteStatus.Version != _observedRouteVersion)
         {
             _observedRouteVersion = _pendingRouteStatus.Version;
+            _dockTracker.RequestResync();
             UpdateSessionMenuText();
         }
 
@@ -1412,6 +1435,9 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
                 $"Codex {shortId} · {OverlayPresentationBuilder.FormatTokenCount(snapshot.TotalTokens)} tokens");
             UpdateSessionMenuText();
         }
+
+        if (!ReferenceEquals(_displayedStatistics, _statistics.Current) && _lastSnapshot is not null)
+            RefreshPresentation();
 
         if (_manualAttachment.IsEditing)
         {
@@ -1512,9 +1538,12 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
 
     private void RefreshPresentation()
     {
-        _presentation = _lastSnapshot is null
+        _displayedStatistics = _statistics.Current;
+        _presentation = _waitingForConversation || _lastSnapshot is null
             ? OverlayPresentationBuilder.CreateWaiting(
-                "正在寻找当前 Codex 会话…",
+                _waitingForConversation
+                    ? CodexUi.T("新对话，等待 token 数据…", "New chat, waiting for token data…")
+                    : CodexUi.T("正在寻找当前 Codex 会话…", "Looking for the current Codex chat…"),
                 _settings.CollapsedPrimaryField,
                 _settings.CollapsedSecondaryField,
                 _settings.VisibleFields)
@@ -1523,6 +1552,24 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
                 _settings.CollapsedPrimaryField,
                 _settings.CollapsedSecondaryField,
                 _settings.VisibleFields);
+        if (!_waitingForConversation && _lastSnapshot is not null)
+        {
+            var totals = Codex.SpeedMetrics.UsageTotals.Sum(_statistics.Current?.Entries.Where(e => e.Thread == _lastSnapshot.ThreadId)
+                ?? Array.Empty<Codex.SpeedMetrics.UsageEntry>());
+            var price = StatisticsForm.Price(totals);
+            var rows = _presentation.ExpandedRows.ToList();
+            rows.RemoveAll(r => r.Field == DisplayField.AverageSpeed);
+            if (rows.All(r => r.Field != _presentation.Primary.Field)) rows.Insert(0, _presentation.Primary);
+            var previous = _presentation.Secondary;
+            if (previous.Field != _presentation.Primary.Field && rows.All(r => r.Field != previous.Field)) rows.Insert(0, previous);
+            _presentation = _presentation with {
+                Primary = new OverlayMetric(DisplayField.AverageSpeed,"均速","响应平均速度",
+                    MetricFormat.FormatTpsFloat(_lastSnapshot.AverageTps)+" tok/s",_lastSnapshot.AverageTps.HasValue),
+                Secondary = new OverlayMetric(DisplayField.None, "API", "API 等值 · USD", price,
+                totals.Responses > totals.UnpricedResponses), ExpandedRows = rows };
+            if (_apiValueMenu is not null) _apiValueMenu.Text = "本对话 API 等值 · " + price + " USD（Standard）";
+        }
+        else if (_apiValueMenu is not null) _apiValueMenu.Text = "本对话 API 等值 · —";
         _form.SetPresentation(_presentation);
     }
 
@@ -1558,9 +1605,24 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         // UI Automation rectangle, never from a saved coordinate.
         var dock = ResolveDock(target);
         _lastDock = dock ?? ComposerDockSnapshot.Empty;
+        var waitingForConversation = dock is not null
+            && !(_monitor?.PinActiveSession ?? false)
+            && string.IsNullOrWhiteSpace(_forcedThreadId)
+            && ComposerToolbarRules.WaitForUsage(_lastDock.Source, _waitingForConversation);
+        if (waitingForConversation != _waitingForConversation)
+        {
+            _waitingForConversation = waitingForConversation;
+            _interaction.CollapseForHostChange();
+            StopOutsideClickPolling();
+            RefreshPresentation();
+            UpdateSessionMenuText();
+        }
         Size? dockedSize = null;
         if (dock is not null)
         {
+            // The fixed window-offset fallback is inaccurate on current Codex toolbar layouts.
+            // Wait for a measured control/composer instead of drawing over model or send buttons.
+            if (dock.Source == ComposerReferenceSource.Window) { _form.Hide(); return; }
             dockedSize = ResolveDockedCapsuleSize(target, dock);
             if (dockedSize is null)
             {
@@ -2474,6 +2536,11 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
 
     private void UpdateSessionMenuText()
     {
+        if (_waitingForConversation)
+        {
+            _sessionMenuItem.Text = CodexUi.T("会话：新对话，等待数据", "Chat: new chat, waiting for data");
+            return;
+        }
         var threadId = _lastSnapshot?.ThreadId ?? _pendingThreadId;
         var shortId = string.IsNullOrWhiteSpace(threadId)
             ? "等待识别"
@@ -2608,6 +2675,8 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             _hotkey.Dispose();
             _watcher.Dispose();
             _routeMonitor.Dispose();
+            _statistics.Dispose();
+            _statisticsForm?.Dispose();
             _monitor?.Dispose();
             DisposeThemeAndForms();
         }

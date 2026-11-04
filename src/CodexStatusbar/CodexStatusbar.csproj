@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>CodexStatusbar</AssemblyName>
     <RootNamespace>CodexStatusbar</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>1.0.0-rc3-glass.15</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
     <Product>Codex Token Glass</Product>
@@ -21,7 +21,7 @@
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Authors>soleillevant0125; CodexStatusbar contributors</Authors>
     <Description>A read-only 3-metric Windows status strip (TPS / total tokens / cache hit) for Codex Desktop.</Description>
-    <RepositoryUrl>https://github.com/dongyue-19/codex-statusbar</RepositoryUrl>
+    <RepositoryUrl>https://github.com/weienjiang0308-cyber/codex-token-glass</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
     <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
@@ -34,6 +34,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Codex.SpeedMetrics\Codex.SpeedMetrics.csproj" />
+    <Compile Include="..\Codex.SpeedMetrics\HostTokenizer.cs" Link="Speed\HostTokenizer.cs" />
+    <PackageReference Include="SharpToken" Version="2.0.6" />
     <PackageReference Include="LiquidGlass" Version="1.0.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" />
     <EmbeddedResource Include="..\..\assets\fonts\*.ttf" />

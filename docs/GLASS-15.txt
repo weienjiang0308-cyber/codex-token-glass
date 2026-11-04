@@ -1,0 +1,39 @@
+# Customized statusbar — 1.0.0-rc3-glass.15
+
+Based on dongyue-19/codex-statusbar (MIT). This document describes the customized build; older upstream documentation describes the original release.
+
+## Behavior
+
+- The compact strip shows Speed, Tokens, and Cache hit. The detail panel separates response-average speed from the short-window visible-text estimate.
+- Response-average speed is the sum of officially recorded output tokens divided by the sum of measured response durations, from the first observed model output to the completed usage record. Tool execution gaps are excluded. Timing coverage is shown. This is a client-observed response average, not server decoder telemetry.
+- Visible-text speed uses a tokenizer estimate; stream packets are not counted as tokens. Weighted aggregation avoids adding unrelated speeds.
+- Usage statistics include the selected turn/chat and calendar week/month. Official historical day buckets replace overlapping local data; current local usage fills days not yet reported. UTC dates are used for reconciliation.
+- Standard API equivalent cost is a comparison value, not a subscription bill. Prices are selected per recorded model and refreshed from official model pages; unknown or cached prices are identified.
+- Settings and statistics use the LiquidGlass 1.0.0 / SkiaSharp 4.153.1 rendering library. This is a Windows implementation, not Apple's native Liquid Glass framework.
+- Slider input is coalesced to animation frames. Continuous thumb positioning, cached backgrounds/text, and a shared animation clock reduce unnecessary redraws. Ordinary buttons use the same clarity mapping at 100%.
+- Fonts were restored to Segoe UI Variable (Segoe UI fallback) and Noto Sans SC (Microsoft YaHei UI fallback). Apple font files are neither required nor included.
+- Settings support language, clarity, and context preferences. Changing the context setting edits local configuration; it does not prove or increase the server's actual supported context limit.
+
+## Build and verify
+
+Requires Windows and the .NET 10 SDK. NuGet restores dependencies.
+
+```powershell
+.\build.ps1
+dotnet run --project tests/SpeedMetrics.Tests/SpeedMetrics.Tests.csproj -c Release
+.\dist\CodexStatusbar.exe --self-test fixtures
+```
+
+The shared metrics project and tests use net7.0 with test roll-forward enabled. The desktop host targets net10.0-windows.
+
+Optional isolated slider check:
+
+```powershell
+.\dist\CodexStatusbar.exe --motion-probe .\dist\motion-check
+```
+
+It writes isolated UI preferences and font/frame measurements and does not save the user's context configuration. Frame measurements describe application rendering on the test machine, not a guarantee of display refresh rate.
+
+Runtime settings, credentials, chat logs, live screenshots, proprietary fonts, and build outputs are not part of the source distribution. Bundled third-party notices remain under assets/.
+
+Repository integration verified on 2026-11-04: Windows publish succeeded; 407 self-tests (including the existing graceful installer-exit checks) and 50 speed/statistics checks passed. Existing installer controls, UI settings migration and synthetic gallery support are preserved.
