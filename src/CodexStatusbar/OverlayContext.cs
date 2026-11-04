@@ -7,6 +7,9 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
 {
     private readonly OverlaySettings _settings;
     private readonly CodexIpcActiveThreadMonitor _routeMonitor = new();
+    private readonly VisibleConversationResolver _visibleConversation = new();
+    private string? _visibleThread;
+    private long _visibleVersion;
     private readonly CodexProcessWatcher _watcher;
     private readonly LifecycleController _lifecycle;
     private readonly bool _background;
@@ -793,7 +796,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
 
     private TokenLogMonitor CreateMonitor()
     {
-        var monitor = new TokenLogMonitor(_sessionRoot);
+        var monitor = new TokenLogMonitor(_sessionRoot) { RequireVisibleConversation = true };
         if (!string.IsNullOrWhiteSpace(_forcedThreadId))
         {
             monitor.PinActiveSession = true;
@@ -1496,32 +1499,32 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         }
 
         var uiScheduler = TaskScheduler.FromCurrentSynchronizationContext();
+        var window = _currentTarget?.HostWindow.Handle ?? 0;
         _ = Task.Run(() =>
             {
-                var routeStatus = _routeMonitor.GetStatus();
-                if (!monitor.PinActiveSession)
-                {
-                    if (!string.IsNullOrWhiteSpace(routeStatus.ThreadId))
-                    {
-                        monitor.PreferredThreadId = routeStatus.ThreadId;
-                    }
-                    else if (!routeStatus.IsConnected)
-                    {
-                        monitor.PreferredThreadId = null;
-                    }
-                }
+                var ipc = _routeMonitor.GetStatus();
+                var visible = _visibleConversation.Read(window, StateDatabase.ResolvePathForSessionsRoot(_sessionRoot));
+                if (!monitor.PinActiveSession) monitor.PreferredThreadId = visible.ThreadId;
                 var snapshot = monitor.Poll();
-                return (
-                    Snapshot: snapshot,
-                    Version: monitor.ActiveSessionVersion,
-                    ThreadId: monitor.ActiveThreadId,
-                    RouteStatus: routeStatus);
+                if (!monitor.PinActiveSession && visible.Title != _visibleConversation.ReadTitle(window))
+                {
+                    monitor.PreferredThreadId = null;
+                    snapshot = monitor.Poll();
+                    visible = new(null, "", "visible-unresolved");
+                }
+                if (_visibleThread != monitor.ActiveThreadId) { _visibleThread = monitor.ActiveThreadId; _visibleVersion++; }
+                if (snapshot is not null && !monitor.PinActiveSession)
+                    snapshot = snapshot with { Title = visible.Title, Source = visible.Source };
+                var routeStatus = ipc with { ThreadId = monitor.ActiveThreadId, Version = _visibleVersion };
+                return (Snapshot: snapshot, Version: monitor.ActiveSessionVersion,
+                    ThreadId: monitor.ActiveThreadId, RouteStatus: routeStatus, Window: window);
             })
             .ContinueWith(task =>
             {
                 try
                 {
-                    if (Volatile.Read(ref _disposed) == 0 && task.Status == TaskStatus.RanToCompletion)
+                    if (Volatile.Read(ref _disposed) == 0 && task.Status == TaskStatus.RanToCompletion
+                        && task.Result.Window == (_currentTarget?.HostWindow.Handle ?? 0))
                     {
                         _pendingSnapshot = task.Result.Snapshot;
                         _pendingSessionVersion = task.Result.Version;
@@ -2545,7 +2548,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         var shortId = string.IsNullOrWhiteSpace(threadId)
             ? "等待识别"
             : OverlayPresentationBuilder.ShortThreadId(threadId);
-        _sessionMenuItem.Text = $"会话：{shortId}{RouteStatusSuffix(_pendingRouteStatus)}";
+        _sessionMenuItem.Text = $"Chat: {_lastSnapshot?.Title ?? "Waiting"} · {shortId}";
     }
 
     private void ApplyTheme(OverlayThemePalette palette)

@@ -643,6 +643,14 @@ internal static class SelfTest
                 UsageRecord(30_000, 24_000, 1_400)),
             31_400L);
 
+        var lateMirror = new RolloutStreamState();
+        lateMirror.ObserveLine(UsageRecord(20_000, 16_000, 900));
+        lateMirror.ObserveLine(TokenCount(10_000, 8_000, 500));
+        Check("delayed legacy mirror cannot roll modern totals backward", lateMirror.TotalTokens, 20_900L);
+        Check("delayed legacy mirror cannot replace modern cache counts", lateMirror.CachedInputTokens, 16_000L);
+        lateMirror.ObserveLine(TokenCount(50_000, 49_000, 2000));
+        Check("legacy mirror never changes authoritative modern totals", lateMirror.TotalTokens, 20_900L);
+
         // 6. the real 0.159 shape: token_usage_record followed by an equal token_count per response.
         //    Outputs are 500, 900, 1300 -> the final reading is input 30000 + output 1300 = 31300.
         var state = new RolloutStreamState();
@@ -867,9 +875,10 @@ internal static class SelfTest
             DisplayFieldRules.SupportedMask);
         Check("normal speed metrics cannot be replaced by waiting/status text", presentation.StatusText is null, true);
         Check("compact strip omits long labels", presentation.CapsuleText!.Contains("≈") || presentation.CapsuleText.Contains("实时"), false);
-        Check("primary speed definition remains available in details", presentation.SpeedExplanation!.Contains(CodexUi.T("响应均速", "Response average")), true);
+        Check("primary speed definition remains available in details", presentation.SpeedExplanation!.Contains(CodexUi.T("文本测速", "Text speed")), true);
         var distinctSpeeds = snapshot with { Tps = 3.5, AverageTps = 51.4 };
-        Check("compact strip uses the same response average as desktop", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds).Contains("51.4 tok/s"), true);
+        Check("compact strip uses live text speed rather than response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds).Contains("3.5 tok/s"), true);
+        Check("missing live telemetry never falls back to the response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with { Tps = null }).Contains("Speed -- tok/s"), true);
         Check("input details keep exact integers", presentation.ExpandedRows.Single(x => x.Field == DisplayField.Input).Value, "1,234,500");
         Check("uncached input excludes cached input", presentation.ExpandedRows.Single(x => x.Field == DisplayField.CacheMiss).Value, "234,500");
         Check("task duration appears in details", presentation.ExpandedRows.Single(x => x.Field == DisplayField.TurnDuration).Value, CodexUi.T("1 分 5 秒", "1m 5s"));
@@ -932,6 +941,32 @@ internal static class SelfTest
         using var clear=new Bitmap(scene.Width,scene.Height,System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         Check("clear endpoint renders successfully",renderer.RenderInto(clear,false),true);
         Check("transparency changes material pixels without changing layout",frosted.GetPixel(200,350).ToArgb()!=clear.GetPixel(200,350).ToArgb(),true);
+        Check("zero clarity hover cannot change the tint endpoint",GlassAppearance.ControlTint(0,true)==100,true);
+        foreach(var dark in new[]{false,true})
+        foreach(var hovered in new[]{false,true})
+        {
+            Bitmap Endpoint(Color backdrop,int clarity)
+            {
+                using var scene0=new Bitmap(320,220,System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+                using(var g=Graphics.FromImage(scene0))g.Clear(backdrop);
+                using var optics=new LiquidBackdropRenderer(()=>10);
+                optics.SetBackdrop(scene0,new Rectangle(8,8,304,204),96,motionOverride:false);
+                optics.TransparencyOverride=clarity;
+                optics.SetButtonBounds(new Rectangle(250,20,44,44),scene0.Size);
+                optics.ButtonState(hovered,false);
+                optics.Control(1,new Rectangle(24,20,80,44),22,hovered,false);
+                var bitmap=new Bitmap(320,220,System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                if(!optics.RenderInto(bitmap,dark))throw new InvalidOperationException(optics.LastError);
+                return bitmap;
+            }
+            using var black=Endpoint(Color.Black,0);using var white=Endpoint(Color.White,0);
+            var same=true;
+            for(var y=10;y<210&&same;y+=3)for(var x=10;x<310;x+=3)
+                if(black.GetPixel(x,y).ToArgb()!=white.GetPixel(x,y).ToArgb()){same=false;break;}
+            Check($"zero clarity ignores backdrop for panel and both buttons dark={dark} hover={hovered}",same,true);
+            using var clearBlack=Endpoint(Color.Black,100);using var clearWhite=Endpoint(Color.White,100);
+            Check($"clear endpoint still reveals backdrop dark={dark} hover={hovered}",clearBlack.GetPixel(150,120)!=clearWhite.GetPixel(150,120),true);
+        }
         Console.Out.WriteLine($"  optical backend: {(renderer.GpuAccelerated ? "GPU" : "CPU")}; warm shader frame: {renderer.LastFrameMs:0.0} ms");
     }
 

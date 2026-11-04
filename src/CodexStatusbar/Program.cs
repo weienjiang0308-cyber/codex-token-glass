@@ -116,6 +116,31 @@ internal static class Program
     private static int Main(string[] args)
     {
         Codex.SpeedMetrics.HostTokenizer.Initialize();
+        if (args.Length >= 3 && args[0] == "--resolve-title-json")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(StateDatabase.TryReadUniqueDisplayName(args[1], args[2])));
+            return 0;
+        }
+        if (args.Length >= 2 && args[0] == "--visible-route-json")
+        {
+            var resolver = new VisibleConversationResolver();
+            using var monitor = new TokenLogMonitor(SessionPathResolver.Resolve()) { RequireVisibleConversation = true };
+            var end = DateTime.UtcNow.AddSeconds(args.Length >= 3 ? double.Parse(args[2]) : 0);
+            string? previous = null;
+            do
+            {
+                var route = resolver.Read(long.Parse(args[1]), StateDatabase.ResolvePath());
+                monitor.PreferredThreadId = route.ThreadId;
+                var sample = monitor.Poll();
+                var json = JsonSerializer.Serialize(new { route.ThreadId, route.Title, route.Source,
+                    Tokens = sample?.TotalTokens, AverageTps = sample?.AverageTps });
+                if (json != previous) { Console.WriteLine(json); Console.Out.Flush(); previous = json; }
+                if (DateTime.UtcNow >= end) break;
+                Thread.Sleep(250);
+            } while (true);
+            return 0;
+        }
+
         if (args.Length >= 2 && args[0] == "--motion-probe") return SettingsMotionProbe.Run(args[1]);
         if (args.Contains("--speed-json")) return Codex.SpeedMetrics.SpeedCli.Run(args);
         if (args.Length >= 2 && args[0] == "--glass-preview") return GlassStatisticsPreview.Run(args[1]);
@@ -823,6 +848,7 @@ internal sealed class TokenLogMonitor : IDisposable
     public string? PreferredThreadId { get; set; }
 
     public bool PinActiveSession { get; set; }
+    public bool RequireVisibleConversation { get; set; }
 
     /// <summary>
     /// True when <c>--thread</c> pinned this monitor to one conversation. An explicit pin is trusted
@@ -841,6 +867,14 @@ internal sealed class TokenLogMonitor : IDisposable
     {
         var preferred = PreferredThreadId;
         var hasPreferred = !string.IsNullOrWhiteSpace(preferred);
+
+        if (RequireVisibleConversation && !PinActiveSession && !hasPreferred)
+        {
+            if (_selectedThreadId is not null) SwitchActiveLog(null, null, "visible-unresolved");
+            _speedObserver.Watch(Array.Empty<string>());
+            while (_changedPaths.TryDequeue(out _)) { }
+            return null;
+        }
 
         if (PinActiveSession && hasPreferred && _selectedThreadId is null)
         {
@@ -1089,6 +1123,7 @@ internal sealed class TokenLogMonitor : IDisposable
 
     private void SwitchActiveLog(string? path, string? threadId, string source, StateThreadRecord? record = null)
     {
+        _liveSpeedDisplay.Clear();
         _selectedThreadId = threadId;
         _selectionSource = source;
         _stateRecord = record ?? TryReadStateRecord(threadId);

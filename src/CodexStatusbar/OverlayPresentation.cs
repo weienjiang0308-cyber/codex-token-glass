@@ -19,7 +19,8 @@ internal sealed record OverlayPresentation(
     string? CapsuleText = null,
     IReadOnlyList<string>? CapsuleVariants = null,
     string? SpeedExplanation = null,
-    bool LiveReadingHeld = false)
+    bool LiveReadingHeld = false,
+    string? ConversationTitle = null)
 {
     /// <summary>
     /// The collapsed strip's text at every supported verbosity, widest first. The last entry is the
@@ -116,8 +117,8 @@ internal static class OverlayPresentationBuilder
             null,
             BuildCapsuleVariants(snapshot)[0],
             BuildCapsuleVariants(snapshot),
-            CodexUi.T($"响应均速 · 已计时 {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} 个响应",
-                $"Response average · {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} timed"), snapshot.TpsHeld);
+            CodexUi.T(snapshot.TpsHeld ? "文本测速 · 保留上次读数（非当前输出）" : "文本测速 · 2 秒平滑 · 每秒更新",
+                snapshot.TpsHeld ? "Text speed · last reading held" : "Text speed · 2s smoothing · 1s updates"), snapshot.TpsHeld, snapshot.Title);
     }
 
     public static string FormatTokenCount(long value) => value switch
@@ -185,11 +186,10 @@ internal static class OverlayPresentationBuilder
     public static IReadOnlyList<string> BuildCapsuleVariants(TokenSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var live = snapshot.AverageTps is double rate ? rate.ToString("0.0", CultureInfo.InvariantCulture) : "--";
+        var live = snapshot.Tps is double rate ? rate.ToString("0.0", CultureInfo.InvariantCulture) : "--";
         var total = snapshot.HasUsage ? MetricFormat.CompactTokens(snapshot.InputTokens + snapshot.OutputTokens) : "--";
         var cache = snapshot.HasUsage ? MetricFormat.FormatCachePercentCompact(snapshot.InputTokens, snapshot.CachedInputTokens) : "--";
-        // One invariant primary metric, identical to the desktop meter: completed-response average.
-        // Visible-text estimates are separately named in the expanded panel.
+        // The compact strip is live visible-text throughput; official response averages stay in details.
         return [$"Speed {live} tok/s · Tokens {total} · Cache hit {cache}",
             $"{live} tok/s · {total} tokens · Cache hit {cache}",
             $"{live} t/s · {total} tok · Hit {cache}"];

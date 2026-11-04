@@ -43,3 +43,7 @@ Codex Desktop, ChatGPT and OpenAI are trademarks of OpenAI. This project is a se
 process: it does not patch, replace, inject into or hook the Codex binary, and it is not developed,
 endorsed or supported by OpenAI. Codex's session-file and IPC formats are internal implementation
 details and may change without notice.
+
+## o200k streaming boundaries
+
+The o200k_base pre-tokenization pattern in HostTokenizer.cs is derived from OpenAI tiktoken (MIT): https://github.com/openai/tiktoken/blob/main/tiktoken_ext/openai_public.py . License retained in assets/tiktoken/LICENSE.txt. SharpToken 2.0.6 supplies token counts.

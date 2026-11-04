@@ -11,6 +11,8 @@ internal sealed class LiquidBackdropRenderer : IDisposable
 {
     private GlassPainter? _painter;
     private SKImage? _source;
+    private SKImage? _composedBackdrop;
+    private (int Clarity,bool Dark)? _backdropKey;
     private CalmInteraction? _interaction;
     private CalmInteraction? _buttonInteraction;
     private Rectangle _button;
@@ -97,6 +99,7 @@ internal sealed class LiquidBackdropRenderer : IDisposable
         blurred.Canvas.DrawImage(original,0,0,new SKSamplingOptions(SKFilterMode.Linear,SKMipmapMode.None),blurPaint);
         var image = blurred.Snapshot();
         _painter.SetSource(image);
+        _composedBackdrop?.Dispose();_composedBackdrop=null;_backdropKey=null;
         _source?.Dispose(); _source = image;
         _panel = panel; _density = dpi / 96f;
         _motionEnabled = motionOverride ?? MotionEnabled;
@@ -194,6 +197,7 @@ internal sealed class LiquidBackdropRenderer : IDisposable
         BitmapData? bits = null;
         try
         {
+            PrepareBackdrop(dark);
             bits = target.LockBits(new Rectangle(Point.Empty, target.Size), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
             // Supersample small popovers at low display density; text is drawn later at native DPI.
             var sample = RenderScaleOverride ?? (target.Width < 900 && _density < 1.75f ? 2 : 1);
@@ -291,8 +295,31 @@ internal sealed class LiquidBackdropRenderer : IDisposable
         }
     }
 
+    private void PrepareBackdrop(bool dark)
+    {
+        var clarity=DesktopMaterial.TransparencyEnabled && !SystemInformation.HighContrast ? Transparency : 0;
+        var key=(clarity,dark);
+        if(_backdropKey==key)return;
+        var visibility=GlassAppearance.BackdropVisibility(clarity);
+        SKImage? next=null;
+        if(visibility<1)
+        {
+            // TintAmount is a material style parameter, not opacity. Its shader caps tint
+            // strength below one. Normalize the source shared by the panel and every lens
+            // so 0% cannot reveal or refract a different desktop image inside a button.
+            using var surface=SKSurface.Create(new SKImageInfo(_source!.Width,_source.Height,
+                SKColorType.Bgra8888,SKAlphaType.Opaque));
+            surface.Canvas.Clear(dark?new SKColor(32,32,32):new SKColor(241,241,241));
+            using var paint=new SKPaint{Color=SKColors.White.WithAlpha((byte)Math.Round(255*visibility))};
+            surface.Canvas.DrawImage(_source,0,0,new SKSamplingOptions(SKFilterMode.Linear,SKMipmapMode.None),paint);
+            next=surface.Snapshot();
+        }
+        _painter!.SetSource(next??_source!);
+        _composedBackdrop?.Dispose();_composedBackdrop=next;_backdropKey=key;
+    }
+
     public void Clear()
-    { ClearClarityLayers();_baseLayer?.Dispose();_baseLayer=null;_baseKey=null;_source?.Dispose(); _source = null; _interaction = null; _buttonInteraction=null; _button=Rectangle.Empty; _buttonHovered=false; _controls.Clear();_tracks.Clear();_matte.Clear(); NeedsFrame = false; }
+    { ClearClarityLayers();_baseLayer?.Dispose();_baseLayer=null;_baseKey=null;_composedBackdrop?.Dispose();_composedBackdrop=null;_backdropKey=null;_source?.Dispose(); _source = null; _interaction = null; _buttonInteraction=null; _button=Rectangle.Empty; _buttonHovered=false; _controls.Clear();_tracks.Clear();_matte.Clear(); NeedsFrame = false; }
     public void Dispose() { Clear(); _gpu?.MakeCurrent(); _surface?.Dispose();_highResolution?.Dispose(); _painter?.Dispose(); _painter = null; _gpu?.Dispose(); _gpu=null; }
     public static bool MotionEnabled => SystemParametersInfo(0x1042, 0, out var enabled, 0) ? enabled : true;
     [DllImport("user32.dll", SetLastError = true)]

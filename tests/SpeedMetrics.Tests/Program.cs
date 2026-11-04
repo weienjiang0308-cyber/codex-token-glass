@@ -143,4 +143,83 @@ try
         "restart includes the whole current turn even after more than 8 MB of tool output");
 }
 finally{File.Delete(longLog);}
+
+// Conservation checks use unheld one-second display samples, including the filter tail.
+void IntegralCase(string label, List<(long At, string Id, string Text)> events, int expected)
+{
+    var window = new VisibleTextWindow();
+    var position = 0; double area = 0; double peak = 0;
+    var finish = (events.Max(e => e.At) / 1000 + 5) * 1000;
+    for (long second = 1000; second <= finish; second += 1000)
+    {
+        while (position < events.Count && events[position].At <= second)
+        {
+            var e = events[position++];
+            var complete = !events.Skip(position).Any(next => next.Id == e.Id);
+            window.Observe(e.Id, e.Text, e.At, complete: complete);
+        }
+        var rate = window.ReadDisplayRate(second) ?? 0;
+        Check(double.IsFinite(rate) && rate >= 0, label + " finite one-second sample");
+        area += rate; peak = Math.Max(peak, rate);
+    }
+    var error = expected == 0 ? Math.Abs(area) : Math.Abs(area - expected) / expected;
+    Check(error <= .05, $"{label} integrated display error {error:P4} <= 5% (area={area}, tokens={expected})");
+    Check(peak <= Math.Max(expected, 1) / 2d, label + " cannot divide by a tiny packet interval");
+}
+IntegralCase("slow tokenizer boundary correction", new(){(1,"url","http:/"),(5000,"url","http://")}, VisibleTextWindow.Count("http://"));
+foreach(var word in new[]{"function", "establishment", "abcdefghijklmnopqrstuvwxyz", "exception", "processing", "こんにちは"})
+for(var cut=1;cut<word.Length;cut++)
+    if(VisibleTextWindow.Count(word[..cut])>VisibleTextWindow.Count(word))
+        IntegralCase("delayed BPE merge "+word+cut,new(){(1,"word",word[..cut]),(5000,"word",word)},VisibleTextWindow.Count(word));
+IntegralCase("one short burst", new(){(1000,"one","Yes.")}, VisibleTextWindow.Count("Yes."));
+IntegralCase("bursty chunks and long tool gap", new(){(1,"a",text),(1,"b",text),(999,"c",text),(20000,"d",text)},4*VisibleTextWindow.Count(text));
+var chunks = Enumerable.Range(1,text.Length).Select(i=>((long)i*79,"fragment",text[..i])).ToList();
+IntegralCase("real BPE fragmented Unicode",chunks,VisibleTextWindow.Count(text));
+var random = new Random(1701);
+for (var scenario=0; scenario<8; scenario++)
+{
+    long at=0;var events=new List<(long At,string Id,string Text)>();int expectedTotal=0;
+    for(var i=0;i<60;i++){at+=random.Next(0,900);var value=string.Join(" ",Enumerable.Repeat("output",random.Next(1,50)));events.Add((at,"item-"+i,value));expectedTotal+=VisibleTextWindow.Count(value);}
+    IntegralCase("random batching "+scenario,events,expectedTotal);
+}
+var oneSecond = new LiveSpeedDisplay();
+Check(oneSecond.Read(reading,1000).Rate == 60,"first live display is available");
+Check(oneSecond.Read(reading with {LiveEstimateTps=999,LastOutputAtMs=1100},1100).Rate==60,"display cannot jump several times within one second");
+Check(oneSecond.Read(reading with {LiveEstimateTps=75,LastOutputAtMs=1900},2000).Rate==75,"next second publishes the new window rate");
+
+using (var replay = new CodexLiveStream())
+{
+    var threadA = "00000000-0000-0000-0000-000000000001";
+    var threadB = "00000000-0000-0000-0000-000000000002";
+    replay.SetThreads(new[]{threadA,threadB});
+    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    typeof(CodexLiveStream).GetField("_connected",flags)!.SetValue(replay,true);
+    var process = typeof(CodexLiveStream).GetMethod("ProcessMessage",flags)!;
+    void Feed(string thread, object change)
+    {
+        using var message = JsonDocument.Parse(JsonSerializer.Serialize(new {method="thread-stream-state-changed",
+            @params=new {hostId="local",conversationId=thread,change}}));
+        process.Invoke(replay,new object[]{message.RootElement});
+    }
+    object Snapshot(string value) => new {type="snapshot",revision=1,conversationState=new {
+        turns=new[]{new {turnId="turn",turnStartedAtMs=1000,status="inProgress",items=new[]{new {type="agentMessage",id="same-item",text=value}}}}}};
+    object Patch(string value,int revision=2,int baselineRevision=1) => new {type="patches",revision,baseRevision=baselineRevision,
+        patches=new[]{new {op="replace",path=new object[]{"turns",0,"items",0,"text"},value}}};
+    Feed(threadA,Snapshot("old A"));Feed(threadB,Snapshot("old B"));
+    Check(replay.Read(threadA).LastOutputAtMs is null && replay.Read(threadB).LastOutputAtMs is null,"both subscribed snapshots are baselines, not bursts");
+    Feed(threadA,Patch("old A new output streaming words arrive now"));
+    Check(replay.Read(threadA).LastOutputAtMs is not null && replay.Read(threadB).LastOutputAtMs is null,"A output never changes B, even with identical turn/item IDs");
+    Feed(threadB,Patch("old B independent output streaming words arrive now"));
+    Check(replay.Read(threadB).LastOutputAtMs is not null,"B receives its own independent output");
+    replay.SetThreads(new[]{threadB});Feed(threadA,Patch("old A more output",3,2));
+    Check(!replay.Read(threadA).Connected && replay.Read(threadB).Connected,"late A frames cannot reselect an unsubscribed conversation");
+    Feed(threadB,Patch("bad revision",5,3));
+    Check(replay.Read(threadB).LastOutputAtMs is null,"missing revision clears a potentially incomplete live window");
+    Feed(threadB,Snapshot("")); Feed(threadB,Patch("function"));
+    Check(replay.Read(threadB).LastOutputAtMs is null,"unfinished short word stays pending instead of generating unstable counts");
+    Feed(threadB,new {type="patches",revision=3,baseRevision=2,patches=new[]{new {op="add",
+        path=new object[]{"turns",0,"agentMessageCompletedAtMsById","same-item"},value=1234}}});
+    Check(replay.Read(threadB).LastOutputAtMs is not null,"completion metadata flushes the unchanged short message tail");
+
+}
 Console.WriteLine($"RESULT {checks} checks passed");

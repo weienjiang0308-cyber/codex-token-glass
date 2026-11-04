@@ -85,6 +85,14 @@ internal static class StateDatabase
             "ORDER BY recency_at_ms DESC LIMIT 1",
             null);
 
+    // The document title is the displayed name, not the original first-user-message title.
+    // Duplicate names are deliberately unresolved rather than sorted by recent activity.
+    public static StateThreadRecord? TryReadUniqueDisplayName(string databasePath, string name) =>
+        string.IsNullOrWhiteSpace(name) ? null : QuerySingle(databasePath,
+            "SELECT id, COALESCE(NULLIF(name,''),title), rollout_path, tokens_used, recency_at_ms FROM threads " +
+            "WHERE COALESCE(NULLIF(name,''),title)=$id AND " +
+            "(SELECT COUNT(*) FROM threads WHERE COALESCE(NULLIF(name,''),title)=$id)=1 LIMIT 1", name);
+
     private static StateThreadRecord? QuerySingle(string databasePath, string sql, string? parameter)
     {
         if (!File.Exists(databasePath))

@@ -1,0 +1,286 @@
+{
+  "version": "1.0.0-rc3-glass.17",
+  "selfTests": 420,
+  "metricsChecks": 778,
+  "routingCases": 5,
+  "integralCases": 45,
+  "maxIntegralErrorPercent": 0.0,
+  "cases": [
+    {
+      "case": "slow tokenizer boundary correction",
+      "errorPercent": 0.0,
+      "integratedTokens": 2.0,
+      "expectedTokens": 2
+    },
+    {
+      "case": "delayed BPE merge function5",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge function6",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge function7",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge establishment8",
+      "errorPercent": 0.0,
+      "integratedTokens": 2.0,
+      "expectedTokens": 2
+    },
+    {
+      "case": "delayed BPE merge establishment10",
+      "errorPercent": 0.0,
+      "integratedTokens": 2.0,
+      "expectedTokens": 2
+    },
+    {
+      "case": "delayed BPE merge establishment11",
+      "errorPercent": 0.0,
+      "integratedTokens": 2.0,
+      "expectedTokens": 2
+    },
+    {
+      "case": "delayed BPE merge establishment12",
+      "errorPercent": 0.0,
+      "integratedTokens": 2.0,
+      "expectedTokens": 2
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz5",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz7",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz9",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz10",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz11",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz13",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz14",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz15",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz16",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz17",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz18",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz19",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz20",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz21",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz22",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz23",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz24",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge abcdefghijklmnopqrstuvwxyz25",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge exception4",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge exception5",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge exception7",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge exception8",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge processing5",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge processing8",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge processing9",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "delayed BPE merge こんにちは4",
+      "errorPercent": 0.0,
+      "integratedTokens": 1.0,
+      "expectedTokens": 1
+    },
+    {
+      "case": "one short burst",
+      "errorPercent": 0.0,
+      "integratedTokens": 2.0,
+      "expectedTokens": 2
+    },
+    {
+      "case": "bursty chunks and long tool gap",
+      "errorPercent": 0.0,
+      "integratedTokens": 100.0,
+      "expectedTokens": 100
+    },
+    {
+      "case": "real BPE fragmented Unicode",
+      "errorPercent": 0.0,
+      "integratedTokens": 25.0,
+      "expectedTokens": 25
+    },
+    {
+      "case": "random batching 0",
+      "errorPercent": 0.0,
+      "integratedTokens": 1547.0,
+      "expectedTokens": 1547
+    },
+    {
+      "case": "random batching 1",
+      "errorPercent": 0.0,
+      "integratedTokens": 1700.0,
+      "expectedTokens": 1700
+    },
+    {
+      "case": "random batching 2",
+      "errorPercent": 0.0,
+      "integratedTokens": 1470.0,
+      "expectedTokens": 1470
+    },
+    {
+      "case": "random batching 3",
+      "errorPercent": 0.0,
+      "integratedTokens": 1445.0,
+      "expectedTokens": 1445
+    },
+    {
+      "case": "random batching 4",
+      "errorPercent": 0.0,
+      "integratedTokens": 1475.0,
+      "expectedTokens": 1475
+    },
+    {
+      "case": "random batching 5",
+      "errorPercent": 0.0,
+      "integratedTokens": 1506.0,
+      "expectedTokens": 1506
+    },
+    {
+      "case": "random batching 6",
+      "errorPercent": 0.0,
+      "integratedTokens": 1581.0,
+      "expectedTokens": 1581
+    },
+    {
+      "case": "random batching 7",
+      "errorPercent": 0.0,
+      "integratedTokens": 1384.0,
+      "expectedTokens": 1384
+    }
+  ],
+  "independentReview": "pending external reviewer; Claude not used",
+  "installedLiveSamples": 157,
+  "installedPollSamples": 171,
+  "installedTotalCounterRegressions": 0,
+  "opaqueEndpointPixelChecks": 8,
+  "installedSha256": "3137DF91145670C22F26409F906663928809C728A1A6D2AF9DEA34FE50454FF3"
+}

@@ -1446,7 +1446,7 @@ internal sealed class TokenStripForm : Form
             graphics.FillPath(fill,shape);
         }
         var left=bounds.Left+D(24);var width=bounds.Width-D(48);
-        DrawAlignedText(graphics,CodexUi.T("Codex 用量","Codex usage"),headerFont,
+        DrawAlignedText(graphics,string.IsNullOrWhiteSpace(_presentation.ConversationTitle) ? CodexUi.T("Codex 用量","Codex usage") : _presentation.ConversationTitle,headerFont,
             new Rectangle(left,bounds.Top+D(16),width-D(140),D(32)),_palette.Value,TextAlignment.Near,false);
         DrawAlignedText(graphics,_presentation.SpeedExplanation ?? CodexUi.T("此对话 · 用量与性能","This conversation · usage & performance"),labelFont,
             new Rectangle(left,bounds.Top+D(52),width,D(24)),_palette.Label,TextAlignment.Near,false);

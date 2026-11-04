@@ -870,7 +870,7 @@ internal sealed class RolloutStreamState
         if (info.TryGetProperty("total_token_usage", out var total) && total.ValueKind == JsonValueKind.Object)
         {
             // Cumulative for the whole thread. Redundant with token_usage_record on 0.159 and the
-            // only carrier on older Codex, so "last one wins in file order" is right for both.
+            // only carrier on older Codex. Modern thread usage takes precedence over delayed mirrors.
             ApplyCumulativeUsage(total, "token_count");
         }
 
@@ -990,8 +990,14 @@ internal sealed class RolloutStreamState
         Tps.RefreshMeasurement();
     }
 
+    private bool _hasModernCumulative;
     private void ApplyCumulativeUsage(JsonElement usage, string carrier)
     {
+        if (carrier == "token_count" && _hasModernCumulative)
+        {
+            DuplicateUsageReadingsIgnored++;
+            return;
+        }
         var total = GetLong(usage, "total_tokens");
         var input = GetLong(usage, "input_tokens");
         var output = GetLong(usage, "output_tokens");
@@ -1001,8 +1007,9 @@ internal sealed class RolloutStreamState
         }
 
         var cached = GetLong(usage, "cached_input_tokens");
+        if (carrier == "token_usage_record") _hasModernCumulative = true;
 
-        // Every carrier here is CUMULATIVE, so the newest reading simply replaces the previous one.
+        // Every accepted carrier is CUMULATIVE. Legacy mirrors cannot overwrite modern usage.
         // Nothing is ever added, which is what makes a duplicate reading harmless — but it is
         // counted and reported so a future Codex change that starts emitting deltas is visible
         // instead of silently corrupting the totals.

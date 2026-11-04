@@ -11,35 +11,65 @@ namespace Codex.SpeedMetrics;
 public sealed class VisibleTextWindow
 {
     public static Func<string, int>? TokenCounter { private get; set; }
-    private readonly Dictionary<string, (string Text, int Count)> _texts = new(StringComparer.Ordinal);
-    private readonly Queue<(long At, int Tokens)> _samples = new();
+    public static Func<string, int>? StablePrefixLength { private get; set; }
+    private readonly Dictionary<string, (string Text, int Count, bool Complete)> _texts = new(StringComparer.Ordinal);
+    public const int SampleMilliseconds = 250;
+    public const int WindowMilliseconds = 2000;
+    private readonly SortedDictionary<long, long> _samples = new();
+    public long ObservedTokens { get; private set; }
     public long? LastOutputAtMs { get; private set; }
     public bool HasObservedNewText { get; private set; }
     public static int Count(string text) => (TokenCounter ?? throw new InvalidOperationException("Tokenizer not initialized by host"))(text);
     public void Clear()
     {
-        _texts.Clear(); _samples.Clear(); LastOutputAtMs = null; HasObservedNewText = false;
+        _texts.Clear(); _samples.Clear(); LastOutputAtMs = null; HasObservedNewText = false; ObservedTokens = 0;
     }
-    public void Observe(string id, string text, long monotonicMs, bool baseline = false)
+    public void Observe(string id, string text, long monotonicMs, bool baseline = false, bool complete = true)
     {
         if (text.Length > 262_144) return; // Bound work; never replace overflow with chunk counts.
-        if (_texts.TryGetValue(id, out var before) && before.Text == text) return;
-        var count = Count(text);
+        if (_texts.TryGetValue(id, out var before) && before.Text == text && before.Complete == complete) return;
+        var length = complete || baseline ? text.Length : (StablePrefixLength ?? throw new InvalidOperationException("Stable tokenizer not initialized"))(text);
+        var count = Count(text[..length]);
         var delta = _texts.TryGetValue(id, out before) && text.StartsWith(before.Text, StringComparison.Ordinal)
-            ? count - before.Count : before.Text is null ? count : 0;
-        _texts[id] = (text, count);
+            ? Math.Max(0, count - before.Count) : before.Text is null ? count : 0;
+        var committed = before.Text is not null && text.StartsWith(before.Text, StringComparison.Ordinal) ? Math.Max(count, before.Count) : count;
+        _texts[id] = (text, committed, complete);
         if (!baseline && delta != 0)
         {
-            _samples.Enqueue((monotonicMs, delta));
+            var bucket = monotonicMs / SampleMilliseconds;
+            _samples[bucket] = _samples.GetValueOrDefault(bucket) + delta;
+            ObservedTokens += delta;
+            Prune(bucket);
             LastOutputAtMs = monotonicMs;
             if (delta > 0) HasObservedNewText = true;
         }
     }
+    private void Prune(long bucket)
+    {
+        foreach (var key in _samples.Keys.TakeWhile(k => k < bucket - WindowMilliseconds / SampleMilliseconds - 6).ToArray())
+            _samples.Remove(key);
+    }
     public double? Read(long monotonicMs)
     {
-        while (_samples.Count > 0 && monotonicMs - _samples.Peek().At >= 2000) _samples.Dequeue();
-        return HasObservedNewText ? Math.Max(0, _samples.Sum(x => x.Tokens)) / 2d : null;
+        // Use eight complete 250 ms bins. A tiny packet interval is never a denominator.
+        var bucket = monotonicMs / SampleMilliseconds;
+        Prune(bucket);
+        var tokens = _samples.Where(x => x.Key >= bucket - 8 && x.Key < bucket).Sum(x => x.Value);
+        return HasObservedNewText ? Math.Max(0, tokens) / (WindowMilliseconds / 1000d) : null;
     }
+
+    public double? ReadDisplayRate(long monotonicMs)
+    {
+        // A displayed second is the mean of its four 250 ms measurements, not one
+        // arbitrary point sample. Summing these unheld readings preserves token area.
+        var end = monotonicMs / 1000 * 4;
+        Prune(end);
+        double sum = 0;
+        for (var bucket = end - 3; bucket <= end; bucket++)
+            sum += Math.Max(0, _samples.Where(x => x.Key >= bucket - 8 && x.Key < bucket).Sum(x => x.Value)) / 2d;
+        return HasObservedNewText ? sum / 4d : null;
+    }
+
 }
 
 /// <summary>
@@ -60,6 +90,8 @@ public sealed class CodexLiveStream : IDisposable
     }
     private readonly object _gate = new();
     private readonly SemaphoreSlim _write = new(1, 1);
+    private readonly SemaphoreSlim _subscriptions = new(1, 1);
+    private readonly HashSet<string> _followed = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop = new();
     private readonly Dictionary<string, FollowState> _states = new(StringComparer.Ordinal);
     private HashSet<string> _desired = new(StringComparer.Ordinal);
@@ -86,18 +118,30 @@ public sealed class CodexLiveStream : IDisposable
             foreach (var id in removed) _states.Remove(id);
             foreach (var id in added) _states[id] = new FollowState();
         }
-        _ = Task.Run(async () =>
-        {
-            foreach (var id in removed) await Follow(id, false);
-            foreach (var id in added) await Follow(id, true);
-        });
+        _ = ReconcileSubscriptions();
     }
-    public (double? Tps, bool Connected, long? LastOutputAtMs) Read(string thread)
+
+    private async Task ReconcileSubscriptions()
+    {
+        await _subscriptions.WaitAsync();
+        try
+        {
+            if (_clientId is null) return;
+            HashSet<string> desired;
+            lock (_gate) desired = new(_desired, StringComparer.Ordinal);
+            foreach (var id in _followed.Except(desired).ToArray())
+            { await Follow(id, false); _followed.Remove(id); }
+            foreach (var id in desired.Except(_followed).ToArray())
+            { await Follow(id, true); _followed.Add(id); }
+        }
+        finally { _subscriptions.Release(); }
+    }
+    public (double? Tps, bool Connected, long? LastOutputAtMs, string? TurnId) Read(string thread)
     {
         lock (_gate)
         {
-            if (!_connected || !_states.TryGetValue(thread, out var state)) return (null, false, null);
-            return (state.Window.Read(Now), true, state.Window.LastOutputAtMs);
+            if (!_connected || !_states.TryGetValue(thread, out var state)) return (null, false, null, null);
+            return (state.Window.ReadDisplayRate(Now), true, state.Window.LastOutputAtMs, state.TurnId);
         }
     }
 
@@ -135,7 +179,10 @@ public sealed class CodexLiveStream : IDisposable
                             foreach (var s in _states.Values) { s.Revision = -1; s.Window.Clear(); s.Turn = null; s.Started = 0; }
                             ids = _desired.ToList();
                         }
-                        foreach (var id in ids) await Follow(id, true);
+                        await _subscriptions.WaitAsync();
+                        try { _followed.Clear(); }
+                        finally { _subscriptions.Release(); }
+                        await ReconcileSubscriptions();
                         continue;
                     }
                     ProcessMessage(message);
@@ -213,7 +260,8 @@ public sealed class CodexLiveStream : IDisposable
         s.TurnId = id; s.Started = started; s.Prefix = prefix;
         var modelItems = new JsonArray();
         foreach (var item in items.EnumerateArray()) modelItems.Add(SafeItem(item));
-        s.Turn = new JsonObject { ["turnId"] = id, ["status"] = ResponseSpeedAnalyzer.Text(t, "status"), ["items"] = modelItems };
+        s.Turn = new JsonObject { ["turnId"] = id, ["status"] = ResponseSpeedAnalyzer.Text(t, "status"), ["items"] = modelItems,
+            ["agentMessageCompletedAtMsById"] = t.TryGetProperty("agentMessageCompletedAtMsById", out var completed) ? JsonNode.Parse(completed.GetRawText()) : new JsonObject() };
     }
     private static JsonNode? SafeItem(JsonElement item)
     {
@@ -238,7 +286,7 @@ public sealed class CodexLiveStream : IDisposable
         { ConsiderTurn(s, value, path); return; }
         if (s.Turn is null || path.Length <= s.Prefix.Length || !path.Take(s.Prefix.Length).SequenceEqual(s.Prefix)) return;
         var relative = path.Skip(s.Prefix.Length).ToArray();
-        if (relative[0] is not ("items" or "status")) return;
+        if (relative[0] is not ("items" or "status" or "agentMessageCompletedAtMsById")) return;
         // Tool stdout, arguments and file bodies are not visible-model-token estimates.
         if (relative[0] == "items" && relative.Length >= 3 && int.TryParse(relative[1], out var itemIndex) &&
             s.Turn["items"] is JsonArray list && itemIndex >= 0 && itemIndex < list.Count &&
@@ -274,10 +322,15 @@ public sealed class CodexLiveStream : IDisposable
             if (id is null || type is not ("agentMessage" or "reasoning")) continue;
             var text = type == "agentMessage" ? TextOf(item["text"]) : TextOf(item["summary"]);
             if (type == "reasoning" && text.Length == 0) text = TextOf(item["content"]);
-            s.Window.Observe(s.TurnId + ":" + id, text, Now, baseline);
+            var status = s.Turn["status"]?.GetValue<string>();
+            var complete = status is "completed" or "interrupted" or "failed"
+                || PositiveTimestamp(item["completedAtMs"])
+                || PositiveTimestamp(s.Turn["agentMessageCompletedAtMsById"]?[id]);
+            s.Window.Observe(s.TurnId + ":" + id, text, Now, baseline, complete);
             if (!baseline) TextUpdates++;
         }
     }
+    private static bool PositiveTimestamp(JsonNode? node) => node is JsonValue v && v.TryGetValue<long>(out var at) && at > 0;
     private static string TextOf(JsonNode? node)
     {
         if (node is JsonValue v && v.TryGetValue<string>(out var text)) return text;

@@ -279,9 +279,10 @@ public sealed class SpeedObserver : IDisposable
         file.ReadNew();
         var a = file.Analyzer;
         var live = _live.Read(threadId);
+        if (live.TurnId != a.TurnId) live = (null, live.Connected, null, live.TurnId);
         return new SpeedReading(threadId, a.TurnId, a.Streaming, a.AverageTps, a.TimedTokens,
             a.TimedMilliseconds, a.TimedResponses, a.CompletedResponses, a.LastTps, a.LastTokens,
-            a.LastMilliseconds, a.PeakTps, a.Streaming ? live.Tps : null, live.Connected,
+            a.LastMilliseconds, a.PeakTps, live.Tps, live.Connected,
             live.LastOutputAtMs, a.PartialHistory, _live.LastError, _live.FramesReceived, _live.TextUpdates);
     }
     public void Dispose() => _live.Dispose();
