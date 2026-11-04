@@ -192,7 +192,8 @@ internal static class OverlayPresentationBuilder
         var speed=status ?? (snapshot.Tps is double rate && rate>0 ? $"Speed {rate.ToString("0.0",CultureInfo.InvariantCulture)} tok/s"
             :snapshot.ToolRunning ? "Command" : snapshot.Streaming ? "Waiting for output" : "Ready");
         parts.Add(speed);
-        if(snapshot.HasUsage)parts.Add("Tokens "+MetricFormat.CompactTokens(snapshot.InputTokens+snapshot.OutputTokens));
+        if(snapshot.HasUsage)parts.Add("Tokens "+MetricFormat.CompactTokens(snapshot.InputTokens+snapshot.OutputTokens>0
+            ?snapshot.InputTokens+snapshot.OutputTokens:snapshot.TotalTokens));
         if(snapshot.InputTokens>0)parts.Add("Cache hit "+MetricFormat.FormatCachePercentCompact(snapshot.InputTokens,snapshot.CachedInputTokens));
         var full=string.Join(" · ",parts);
         var compact=full.Replace("Waiting for output","Waiting").Replace("Speed ","").Replace("Tokens ","").Replace("Cache hit ","Hit ");

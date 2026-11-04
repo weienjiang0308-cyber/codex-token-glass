@@ -1,6 +1,6 @@
 {
   "version": "1.0.0-rc3-glass.19",
-  "selfTests": 425,
+  "selfTests": 427,
   "metricsChecks": 791,
   "routingCases": 5,
   "integralCases": 45,
@@ -282,7 +282,7 @@
   "installedPollSamples": 171,
   "installedTotalCounterRegressions": 0,
   "opaqueEndpointPixelChecks": 8,
-  "installedSha256": "573eb2eb249d67dacc979e0b604de1cf839612a8105bcbc3e2feaecfbc4eff11",
+  "installedSha256": "f0009822b33169350316b1edae8036332253093f1560cf7774f097aea0bd8055",
   "protectedSettingsUnchanged": true,
   "monthlyArchiveExists": true,
   "nativeCornerProbe": {

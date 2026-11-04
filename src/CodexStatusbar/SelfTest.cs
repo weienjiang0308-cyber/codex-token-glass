@@ -884,6 +884,9 @@ internal static class SelfTest
         Check("command state replaces the live rate in the compact strip",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="command",ToolRunning=true}).StartsWith("Command ·"),true);
         Check("thinking state is explicit instead of a zero speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="thinking"}).StartsWith("Thinking ·"),true);
         Check("visible output restores live speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="generating"}).Contains("3.5 tok/s"),true);
+        var totalOnly=snapshot with{InputTokens=0,OutputTokens=0,CachedInputTokens=0,TotalTokens=123456,BaselineSource="state-db"};
+        Check("database-only recovery retains the known total instead of showing zero",OverlayPresentationBuilder.BuildCapsuleText(totalOnly).Contains("Tokens "+MetricFormat.CompactTokens(123456)),true);
+        Check("database-only recovery does not invent a cache rate",OverlayPresentationBuilder.BuildCapsuleText(totalOnly).Contains("Cache hit"),false);
         Check("input details keep exact integers", presentation.ExpandedRows.Single(x => x.Field == DisplayField.Input).Value, "1,234,500");
         Check("uncached input excludes cached input", presentation.ExpandedRows.Single(x => x.Field == DisplayField.CacheMiss).Value, "234,500");
         Check("task duration appears in details", presentation.ExpandedRows.Single(x => x.Field == DisplayField.TurnDuration).Value, CodexUi.T("1 分 5 秒", "1m 5s"));
