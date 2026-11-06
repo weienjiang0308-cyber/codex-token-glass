@@ -24,7 +24,7 @@ public static class SpeedCli
             if (args.Contains("--display-speed"))
             {
                 var shown = display.Read(reading, Environment.TickCount64);
-                Console.WriteLine(JsonSerializer.Serialize(new { Raw = reading, DisplayedTps = reading.Activity is null or "generating" ? shown.Rate : null, Activity = reading.Activity, ResponseAverageTps = reading.AverageTps,
+                Console.WriteLine(JsonSerializer.Serialize(new { Raw = reading, DisplayedTps = reading.Activity is null or "generating" or "working" or "thinking" or "command" or "searching" or "tool" ? shown.Rate : null, Activity = reading.Activity, ResponseAverageTps = reading.AverageTps,
                     LiveDetailTps = shown.Rate, LiveDetailHeld = shown.Held }));
             }
             else Console.WriteLine(JsonSerializer.Serialize(reading));

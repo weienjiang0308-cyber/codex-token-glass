@@ -49,6 +49,9 @@ internal static class SettingsControlsProbe
             using var screenshot=new Bitmap(form.ClientSize.Width-24,230,PixelFormat.Format32bppRgb);
             using(var g=Graphics.FromImage(screenshot))g.CopyFromScreen(form.Left+12,form.Top+104,0,0,screenshot.Size);
             screenshot.Save(Path.Combine(directory,"context-controls.png"));
+            using var full=new Bitmap(form.ClientSize.Width,form.ClientSize.Height,PixelFormat.Format32bppRgb);
+            using(var g=Graphics.FromImage(full))g.CopyFromScreen(form.PointToScreen(Point.Empty),Point.Empty,full.Size);
+            full.Save(Path.Combine(directory,"settings-full.png"));
             timer.Stop();form.Close();
         };
         form.Shown+=(_,_)=>timer.Start();Application.Run(form);

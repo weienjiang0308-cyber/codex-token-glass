@@ -13,6 +13,10 @@ internal sealed class SettingsForm : Form
     private readonly ContextSlider _slider;
     private readonly ContextSlider _glassSlider;
     private readonly Label _glassValue;
+    private readonly Label _clarityHint;
+    internal Rectangle ReadingPlateBounds => Rectangle.FromLTRB(
+        (int)(16 * DeviceDpi / 96f), (int)(104 * DeviceDpi / 96f),
+        ClientSize.Width - (int)(16 * DeviceDpi / 96f), _clarityHint.Bottom + (int)(16 * DeviceDpi / 96f));
     private readonly LiquidBackdropRenderer _optics=new();
     private readonly UiFrameClock _materialTimer=new();
     private Bitmap? _materialFrame;
@@ -126,7 +130,7 @@ internal sealed class SettingsForm : Form
         Controls.Add(_glassSlider);
         AddLabel(CodexUi.T("柔和","Frosted"),28,583,110,20,9,false,true);
         var clear=AddLabel(CodexUi.T("清透","Clear"),412,583,110,20,9,false,true);clear.TextAlign=ContentAlignment.MiddleRight;
-        AddLabel(CodexUi.T("实时预览；松手自动保存，文字不随背景变淡。","Live preview. Saves on release; text stays solid."),28,610,494,22,9,false,true);
+        _clarityHint=AddLabel(CodexUi.T("实时预览；松手自动保存，文字不随背景变淡。","Live preview. Saves on release; text stays solid."),28,610,494,22,9,false,true);
         _glassSlider.ValueChanged+=(_,_)=>{_pendingClarityValue=_glassSlider.Value;RefreshMaterial();};
         _glassSlider.MouseUp+=(_,_)=>CodexUi.CommitAppearance();
         _glassSlider.KeyUp+=(_,_)=>CodexUi.CommitAppearance();
@@ -139,6 +143,11 @@ internal sealed class SettingsForm : Form
         // Four lines of context explanation need more height with Noto/PingFang. Keep everything
         // below it in the normal flow rather than painting compression controls over the last line.
         foreach (Control control in Controls) if (control.Top >= 385) control.Top += 40;
+        // Keep the helper inside the reading plate with 16 DIP below its full label box.
+        // Status and actions follow the card instead of sharing its bottom edge.
+        _status.Top = _clarityHint.Bottom + 24;
+        _restore.Top = apply.Top = _status.Bottom + 10;
+        ClientSize = new Size(ClientSize.Width, apply.Bottom + 16);
         _window.ValueChanged += (_, _) =>
         {
             if (_syncing) return;
@@ -290,7 +299,7 @@ internal sealed class SettingsForm : Form
         _optics.RenderScaleOverride=(_slider.Capture||_glassSlider.Capture)?1:null;
         var palette=_currentPalette();var u=DeviceDpi/96f;
         var alpha=GlassAppearance.ReadingPlateAlpha(CodexUi.GlassTransparency);
-        _optics.ReadingSurfaces((new Rectangle((int)(16*u),(int)(104*u),ClientSize.Width-(int)(32*u),(int)(567*u)),16*u,Color.FromArgb(alpha,palette.Background)));
+        _optics.ReadingSurfaces((ReadingPlateBounds,16*u,Color.FromArgb(alpha,palette.Background)));
         foreach(Control control in Controls)
         {
             if(control is GlassButton button)

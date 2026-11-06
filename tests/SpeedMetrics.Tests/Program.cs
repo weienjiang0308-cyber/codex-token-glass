@@ -230,6 +230,14 @@ using (var replay = new CodexLiveStream())
 }
 
 var commandDisplay=new LiveSpeedDisplay();commandDisplay.Read(reading,1000);
+foreach(var activity in new[]{"working","thinking","command","searching","tool","ready"})
+{
+    var display=new LiveSpeedDisplay();display.Read(reading,1000);
+    Check(display.Read(reading with{Activity=activity,LiveEstimateTps=1,LastOutputAtMs=1800},2000)==(60d,true),activity+" retains the last active rate without sampling filter decay");
+    Check(display.Read(reading with{Activity="generating",LiveEstimateTps=80,LastOutputAtMs=3000},3000)==(80d,false),activity+" resumes on fresh text");
+    Check(display.Read(reading with{Activity=activity,ThreadId="other",LastOutputAtMs=null},4000).Rate is null,activity+" cannot reuse another conversation's rate");
+    Check(new LiveSpeedDisplay().Read(reading with{Activity=activity},1000).Rate is null,activity+" before first text does not invent a last rate");
+}
 Check(commandDisplay.Read(reading with{ToolRunning=true,LiveEstimateTps=1,LastOutputAtMs=1800},2000)==(60d,true),"running command holds the pre-command rate instead of a decayed 1 tok/s");
 Check(commandDisplay.Read(reading with{ToolRunning=false,LiveEstimateTps=1,LastOutputAtMs=1800},5000)==(60d,true),"finishing a command does not publish a stale filter tail");
 Check(commandDisplay.Read(reading with{ToolRunning=false,LiveEstimateTps=80,LastOutputAtMs=6000},6000)==(80d,false),"fresh visible output resumes live updates after the tool");

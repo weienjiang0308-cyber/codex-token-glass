@@ -881,7 +881,12 @@ internal static class SelfTest
         Check("missing live telemetry never falls back to the response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with { Tps = null }).Contains("Ready"), true);
         Check("unavailable fields do not form dash placeholders",!OverlayPresentationBuilder.BuildCapsuleText(snapshot with{Tps=null,InputTokens=0,OutputTokens=0,TotalTokens=0}).Contains("--"),true);
         Check("streaming without a text sample reports waiting",OverlayPresentationBuilder.BuildCapsuleText(snapshot with{Tps=null,Streaming=true}).Contains("Waiting for output"),true);
-        Check("command state replaces the live rate in the compact strip",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="command",ToolRunning=true}).StartsWith("Command ·"),true);
+        Check("command state retains the last text rate alongside it",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="command",ToolRunning=true}).StartsWith("Command · Last 3.5 tok/s"),true);
+        Check("working state retains the last rate rather than the response average",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="working",TpsHeld=true}).StartsWith("Working · Last 3.5 tok/s"),true);
+        Check("working before first output does not invent a speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="working",Tps=null}).StartsWith("Working · Tokens"),true);
+        Check("completed task removes the working state and held speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="ready",TpsHeld=true}).StartsWith("Ready · Tokens"),true);
+        Check("generating removes working and last labels",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="generating"}).StartsWith("Speed 3.5 tok/s"),true);
+        Check("invalid held speed is omitted",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="working",Tps=double.NaN}).Contains("Last"),false);
         Check("thinking state is explicit instead of a zero speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="thinking"}).StartsWith("Thinking ·"),true);
         Check("visible output restores live speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="generating"}).Contains("3.5 tok/s"),true);
         var totalOnly=snapshot with{InputTokens=0,OutputTokens=0,CachedInputTokens=0,TotalTokens=123456,BaselineSource="state-db"};

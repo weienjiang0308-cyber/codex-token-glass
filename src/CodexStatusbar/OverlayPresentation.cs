@@ -175,13 +175,9 @@ internal static class OverlayPresentationBuilder
     }
 
     /// <summary>
-    /// The collapsed strip at every verbosity, widest first, as one line each:
-    /// <c>⚡ 243 tok/s · 5.7M tok · Cache 98%</c>.
-    ///
-    /// Total is rendered as <c>input + output</c> — the strict definition — not as the carrier's
-    /// own <c>total_tokens</c> field, so what is displayed is literally the documented formula.
-    /// Cache renders as <c>--</c> when input is 0, never as 0% or NaN. TPS renders as <c>--</c>
-    /// whenever it is unknown, and gains a leading <c>~</c> while it is a held value.
+    /// Compact visible-text speed, token total and known cache ratio. Working phases retain
+    /// the last valid text reading beside the state; Ready/opening/connecting omit it.
+    /// Missing metrics are omitted. Response-average speed is never used as a fallback.
     /// </summary>
     public static IReadOnlyList<string> BuildCapsuleVariants(TokenSnapshot snapshot)
     {
@@ -189,9 +185,12 @@ internal static class OverlayPresentationBuilder
         var parts=new List<string>();
         var status=snapshot.Activity switch { "command"=>"Command", "searching"=>"Searching", "tool"=>"Using tools",
             "thinking"=>"Thinking", "opening"=>"Opening chat", "connecting"=>"Connecting", "ready"=>"Ready", "working"=>"Working", _=>null };
-        var speed=status ?? (snapshot.Tps is double rate && rate>0 ? $"Speed {rate.ToString("0.0",CultureInfo.InvariantCulture)} tok/s"
+        var speed=status ?? (snapshot.Tps is double rate && rate>0 && double.IsFinite(rate) ? $"Speed {rate.ToString("0.0",CultureInfo.InvariantCulture)} tok/s"
             :snapshot.ToolRunning ? "Command" : snapshot.Streaming ? "Waiting for output" : "Ready");
         parts.Add(speed);
+        if (snapshot.Activity is "working" or "thinking" or "command" or "searching" or "tool" &&
+            snapshot.Tps is double lastRate && lastRate > 0 && double.IsFinite(lastRate))
+            parts.Add($"Last {lastRate.ToString("0.0",CultureInfo.InvariantCulture)} tok/s");
         if(snapshot.HasUsage)parts.Add("Tokens "+MetricFormat.CompactTokens(snapshot.InputTokens+snapshot.OutputTokens>0
             ?snapshot.InputTokens+snapshot.OutputTokens:snapshot.TotalTokens));
         if(snapshot.InputTokens>0)parts.Add("Cache hit "+MetricFormat.FormatCachePercentCompact(snapshot.InputTokens,snapshot.CachedInputTokens));
