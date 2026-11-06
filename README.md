@@ -6,7 +6,13 @@
 
 基于 [dongyue-19/codex-statusbar](https://github.com/dongyue-19/codex-statusbar) 修改，保留上游 MIT 许可及署名。图形材质使用 [LiquidGlass](https://github.com/shayann07/liquidglass)，不是 Apple 官方组件或原生 iOS API。
 
-## 最新界面修复（glass.20）
+## 功能遮挡修复（glass.21）
+
+恢复设置页被说明文字遮住的上下文数值输入框：输入框移至标题右侧，说明独占下一行。已实测手动输入、上下加减、滑块双向联动及三个容量预设，测试未改变全局配置。
+
+[控件验证结果](docs/glass21-controls-validation.json)
+
+## 材质与字号修复（glass.20）
 
 一级菜单正文、数值和统计按钮适度加大。修复设置面板捕获旧菜单背景、透明重绘重复叠加及边缘层不同步的问题；避免设置与统计同时叠放。
 

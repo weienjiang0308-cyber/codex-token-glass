@@ -116,6 +116,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         Codex.SpeedMetrics.HostTokenizer.Initialize();
+        if(args.Length>=2 && args[0]=="--settings-controls-probe")return SettingsControlsProbe.Run(args[1]);
         if(args.Length>=3 && args[0]=="--visible-route-watch")
         {
             using var monitor=new VisibleConversationMonitor(()=>long.Parse(args[1]),StateDatabase.ResolvePath());monitor.Start();

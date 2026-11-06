@@ -66,13 +66,13 @@ internal sealed class SettingsForm : Form
         close.AccessibleName = CodexUi.T("关闭设置", "Close settings");
         close.Click += (_, _) => Close();
         AddLabel(CodexUi.T("跟随 Codex 的外观，让指标和设置保持一致。", "A quieter view of your tokens, in Codex's own colors."), 29, 64, 494, 24, 9.5f, false, true);
-        AddLabel(CodexUi.T("全局上下文窗口", "Global context window"), 28, 115, 320, 25, 11, true);
+        AddLabel(CodexUi.T("全局上下文窗口", "Global context window"), 28, 112, 284, 30, 11, true);
         AddLabel(CodexUi.T("修改 Codex 全局配置，不绑定单个模型。", "Global Codex configuration, independent of the selected model."), 28, 146, 494, 24, 10.5f, false, true);
         _window = new NumericUpDown
         {
             Minimum = 32_000, Maximum = ContextConfiguration.SliderMaximum, Increment = 10_000,
             ThousandsSeparator = true, Value = Math.Clamp(_initial.Window, 32_000, ContextConfiguration.SliderMaximum),
-            Bounds = new Rectangle(336, 141, 185, 32), Font = CodexUi.Font(11),
+            Bounds = new Rectangle(336, 115, 185, 32), Font = CodexUi.Font(11),
             BorderStyle = BorderStyle.None, BackColor = _palette.Background, ForeColor = _palette.Value,
             AccessibleName = CodexUi.T("上下文 token 数量", "Context tokens")
         };
