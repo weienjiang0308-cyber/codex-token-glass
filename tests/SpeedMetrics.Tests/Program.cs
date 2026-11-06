@@ -226,6 +226,20 @@ using (var replay = new CodexLiveStream())
     Feed(threadB,new {type="patches",revision=11,baseRevision=10,patches=new[]{new {op="replace",path=new object[]{"turns",0,"items",0,"status"},value="completed"}}});
     Check(!replay.Read(threadB).ToolRunning,"tool completion patches clear the hold phase");
 
+    // Exercise the IPC receiver, not just a preconstructed presentation string:
+    // an ended turn must override an unfinished item still present in its history.
+    foreach(var endState in new[]{"completed","interrupted","failed"})
+    {
+        Feed(threadB,new {type="snapshot",revision=20,conversationState=new {turns=new[]{new {turnId="ending-turn",turnStartedAtMs=2000,status="inProgress",items=Array.Empty<object>()}}}});
+        Check(replay.Read(threadB).Activity=="working","IPC starts in Working before "+endState);
+        Feed(threadB,new {type="patches",revision=21,baseRevision=20,patches=new[]{new {op="replace",path=new object[]{"turns",0,"status"},value=endState}}});
+        Check(replay.Read(threadB).Activity=="ready"&&!replay.Read(threadB).ToolRunning,"IPC "+endState+" clears Working immediately");
+        Feed(threadB,new {type="snapshot",revision=30,conversationState=new {turns=new[]{new {turnId="ending-tool",turnStartedAtMs=3000,status="inProgress",items=new[]{new {type="commandExecution",id="unfinished-tool",status="inProgress",startedAtMs=3000}}}}}});
+        Check(replay.Read(threadB).Activity=="command","IPC command active before "+endState);
+        Feed(threadB,new {type="patches",revision=31,baseRevision=30,patches=new[]{new {op="replace",path=new object[]{"turns",0,"status"},value=endState}}});
+        Check(replay.Read(threadB).Activity=="ready"&&!replay.Read(threadB).ToolRunning,"IPC "+endState+" overrides an unfinished tool item");
+    }
+
 
 }
 
