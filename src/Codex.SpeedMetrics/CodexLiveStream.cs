@@ -7,6 +7,8 @@ using System.Text.Json.Nodes;
 
 namespace Codex.SpeedMetrics;
 
+public sealed record LiveUsageTotals(long Input, long Cached, long Output, long Reasoning, long Total);
+
 /// <summary>Visible-text tokenizer, deliberately independent of the number of transport chunks.</summary>
 public sealed class VisibleTextWindow
 {
@@ -78,6 +80,8 @@ public sealed class VisibleTextWindow
 /// </summary>
 public sealed class CodexLiveStream : IDisposable
 {
+    private readonly bool _measureText;
+    public CodexLiveStream(bool measureText = true) => _measureText = measureText;
     private const int MaximumFrame = 64 * 1024 * 1024;
     private sealed class FollowState
     {
@@ -87,6 +91,7 @@ public sealed class CodexLiveStream : IDisposable
         public string? TurnId;
         public long Started;
         public VisibleTextWindow Window = new();
+        public JsonNode? Usage;
     }
     private readonly object _gate = new();
     private readonly SemaphoreSlim _write = new(1, 1);
@@ -105,6 +110,19 @@ public sealed class CodexLiveStream : IDisposable
     internal static long Now => Environment.TickCount64;
 
     public void Start() => _runner ??= Task.Run(Run);
+    public LiveUsageTotals? ReadUsage(string thread)
+    {
+        lock (_gate)
+        {
+            if (!_connected || !_states.TryGetValue(thread, out var state) || state.Usage is not JsonObject usageRoot
+                || usageRoot["total"] is not JsonObject total) return null;
+            long? Value(string name) => total[name] is JsonValue v && v.TryGetValue<long>(out var n) && n >= 0 ? n : null;
+            if (Value("inputTokens") is not long input || Value("outputTokens") is not long output
+                || Value("cachedInputTokens") is not long cached || Value("totalTokens") is not long count
+                || cached > input || count < input || count - input != output) return null;
+            return new(input, cached, output, Value("reasoningOutputTokens") ?? 0, count);
+        }
+    }
     public void SetThreads(IEnumerable<string> ids)
     {
         HashSet<string> next = new(ids.Where(x => Guid.TryParse(x, out _)).Distinct().Take(4), StringComparer.Ordinal);
@@ -176,7 +194,7 @@ public sealed class CodexLiveStream : IDisposable
                         lock (_gate)
                         {
                             _connected = true; LastError = null;
-                            foreach (var s in _states.Values) { s.Revision = -1; s.Window.Clear(); s.Turn = null; s.Started = 0; }
+                            foreach (var s in _states.Values) { s.Revision = -1; s.Window.Clear(); s.Turn = null; s.Usage = null; s.Started = 0; }
                             ids = _desired.ToList();
                         }
                         await _subscriptions.WaitAsync();
@@ -217,7 +235,7 @@ public sealed class CodexLiveStream : IDisposable
             if (kind == "snapshot")
             {
                 state.Revision = ResponseSpeedAnalyzer.Number(change, "revision");
-                state.Window.Clear(); state.Turn = null; state.Started = 0;
+                state.Window.Clear(); state.Turn = null; state.Usage = null; state.Started = 0;
                 if (change.TryGetProperty("conversationState", out var conversation)) ObserveSnapshot(state, conversation);
                 ObserveTexts(state, true);
                 return;
@@ -227,7 +245,7 @@ public sealed class CodexLiveStream : IDisposable
             if (revision <= state.Revision) return;
             if (ResponseSpeedAnalyzer.Number(change, "baseRevision") != state.Revision)
             {
-                state.Revision = -1; state.Window.Clear(); state.Turn = null;
+                state.Revision = -1; state.Window.Clear(); state.Turn = null; state.Usage = null;
                 _ = Task.Run(async () => { await Follow(thread, false); await Follow(thread, true); });
                 return;
             }
@@ -240,6 +258,7 @@ public sealed class CodexLiveStream : IDisposable
 
     private static void ObserveSnapshot(FollowState s, JsonElement c)
     {
+        if (c.TryGetProperty("latestTokenUsageInfo", out var usage)) s.Usage = JsonNode.Parse(usage.GetRawText());
         if (c.TryGetProperty("turnHistory", out var th) && th.TryGetProperty("history", out var history) &&
             history.TryGetProperty("entitiesByKey", out var entities))
             foreach (var entry in entities.EnumerateObject())
@@ -284,6 +303,21 @@ public sealed class CodexLiveStream : IDisposable
         var path = PatchPath(p);
         var op = ResponseSpeedAnalyzer.Text(p, "op");
         var hasValue = p.TryGetProperty("value", out var value);
+        if (path.Length > 0 && path[0] == "latestTokenUsageInfo")
+        {
+            if (path.Length == 1) s.Usage = hasValue ? JsonNode.Parse(value.GetRawText()) : null;
+            else
+            {
+                JsonNode? usageParent = s.Usage;
+                foreach (var part in path.Skip(1).SkipLast(1)) usageParent = (usageParent as JsonObject)?[part];
+                if (usageParent is JsonObject usageObject)
+                {
+                    if (op == "remove") usageObject.Remove(path[^1]);
+                    else usageObject[path[^1]] = hasValue ? JsonNode.Parse(value.GetRawText()) : null;
+                }
+            }
+            return;
+        }
         if (path.Length == 4 && path.Take(3).SequenceEqual(new[] { "turnHistory", "history", "entitiesByKey" }) && hasValue)
         { ConsiderTurn(s, value, path); return; }
         if (path.Length == 2 && path[0] == "turns" && hasValue)
@@ -318,7 +352,7 @@ public sealed class CodexLiveStream : IDisposable
     }
     private void ObserveTexts(FollowState s, bool baseline)
     {
-        if (s.Turn?["items"] is not JsonArray items) return;
+        if (!_measureText || s.Turn?["items"] is not JsonArray items) return;
         foreach (var item in items)
         {
             if (item is null) continue;

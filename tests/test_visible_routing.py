@@ -23,4 +23,11 @@ with tempfile.TemporaryDirectory(prefix="codex-visible-route-") as folder:
         row = json.loads(result.stdout)
         actual = row["Id"] if row else None
         assert actual == expected, (title, actual, expected)
+    # Equal display names: only the IPC-followed chat whose own name is the visible title may be chosen.
+    for title, followed, expected in [("Duplicate", "d2", "d2"), ("Duplicate", "d1", "d1"), ("Duplicate", "a", None),
+                                      ("Duplicate", "missing", None), ("Visible A", "b", "a"), ("New chat", "a", None)]:
+        result = subprocess.run([str(exe), "--resolve-title-json", str(database), title, followed], capture_output=True, check=True, timeout=15)
+        actual = json.loads(result.stdout)["Id"]
+        assert actual == expected, (title, followed, actual, expected)
+    print("PASS 6 duplicate-name disambiguation cases")
 print("PASS 5 isolated visible-conversation routing cases")

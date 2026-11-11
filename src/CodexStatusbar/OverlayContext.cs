@@ -8,7 +8,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     private readonly OverlaySettings _settings;
     private readonly CodexIpcActiveThreadMonitor _routeMonitor = new();
     private readonly VisibleConversationMonitor _visibleMonitor;
-    private readonly System.Windows.Forms.Timer _routeTimer = new(){Interval=100};
+    private readonly System.Windows.Forms.Timer _routeTimer = new(){Interval=50};
     private readonly Dictionary<string,TokenSnapshot> _chatSnapshots = new(StringComparer.Ordinal);
     private long _displayedVisibleVersion=-1;
     private readonly CodexProcessWatcher _watcher;
@@ -147,8 +147,8 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _positionDiagnostics = positionDiagnostics;
         _modeLabel = background ? "background" : "interactive";
         _sessionRoot = sessionRoot;
-        _visibleMonitor = new VisibleConversationMonitor(()=>_currentTarget?.HostWindow.Handle??0,StateDatabase.ResolvePathForSessionsRoot(sessionRoot));
-        _routeTimer.Tick+=(_,_)=>ApplyVisibleRoute();
+        _visibleMonitor = new VisibleConversationMonitor(()=>_currentTarget?.HostWindow.Handle??0,StateDatabase.ResolvePathForSessionsRoot(sessionRoot),()=>_routeMonitor.GetStatus().ThreadId);
+        _routeTimer.Tick+=(_,_)=> { ApplyVisibleRoute(); RequestBackgroundPoll(); ApplyComposerPopupState(); };
         _statistics = new UsageStatisticsService(sessionRoot);
         _executablePath = StartupCommandLine.ResolveExecutablePath();
 
@@ -1488,6 +1488,18 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         UpdateManualMenuState();
     }
 
+    private bool _composerPopupOpen;
+    /// <summary>React to a Codex composer menu opening or closing within one 50 ms tick, instead of
+    /// waiting for the slower layout timer: hide the strip at once, and lay it out again afterwards.</summary>
+    private void ApplyComposerPopupState()
+    {
+        var open=_dockTracker.Latest.PopupOpen;
+        if(open==_composerPopupOpen || Volatile.Read(ref _disposed)!=0)return;
+        _composerPopupOpen=open;
+        if(open){_interaction.HideForSpace();StopOutsideClickPolling();_form.Hide();}
+        else if(_currentTarget is { } target && !_manualAttachment.IsEditing)ApplyLayout(target);
+    }
+
     private void ApplyVisibleRoute()
     {
         if(Volatile.Read(ref _disposed)!=0 || _monitor is null || _monitor.PinActiveSession)return;
@@ -1505,8 +1517,11 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         RequestBackgroundPoll();
     }
 
+    private long _lastMetricsPollAt;
     private void RequestBackgroundPoll()
     {
+        var now = Environment.TickCount64;
+        if (now - _lastMetricsPollAt < 100) return;
         if (Volatile.Read(ref _disposed) != 0
             || Interlocked.CompareExchange(ref _pollInFlight, 1, 0) != 0)
         {
@@ -1523,6 +1538,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         }
 
         var uiScheduler = TaskScheduler.FromCurrentSynchronizationContext();
+        _lastMetricsPollAt = now;
         var window = _currentTarget?.HostWindow.Handle ?? 0;
         _ = Task.Run(() =>
             {
@@ -1554,6 +1570,18 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
                         _pendingSessionVersion = task.Result.Version;
                         _pendingThreadId = task.Result.ThreadId;
                         _pendingRouteStatus = task.Result.RouteStatus;
+                        // Publish immediately on the UI scheduler instead of waiting for the next
+                        // lifecycle timer (which may be much slower than the metrics poll).
+                        _observedSessionVersion = _pendingSessionVersion;
+                        _observedThreadId = _pendingThreadId;
+                        if (_pendingSnapshot is { } fresh && fresh != _lastSnapshot)
+                        {
+                            _lastSnapshot = fresh;
+                            _debug.Write(fresh);
+                            RefreshPresentation();
+                            if (_currentTarget is { } target && !_manualAttachment.IsEditing) ApplyLayout(target);
+                            UpdateSessionMenuText();
+                        }
                     }
                 }
                 finally
@@ -1592,9 +1620,9 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             var previous = _presentation.Secondary;
             if (previous.Field != _presentation.Primary.Field && rows.All(r => r.Field != previous.Field)) rows.Insert(0, previous);
             _presentation = _presentation with {
-                Primary = new OverlayMetric(DisplayField.AverageSpeed,"均速","响应平均速度",
+                Primary = new OverlayMetric(DisplayField.AverageSpeed,CodexUi.T("均速","Average"),CodexUi.T("响应平均速度","Response throughput"),
                     MetricFormat.FormatTpsFloat(_lastSnapshot.AverageTps)+" tok/s",_lastSnapshot.AverageTps.HasValue),
-                Secondary = new OverlayMetric(DisplayField.None, "API", "API 等值 · USD", price,
+                Secondary = new OverlayMetric(DisplayField.None, "API", CodexUi.T("API 等值 · USD","API equivalent · USD"), price,
                 totals.Responses > totals.UnpricedResponses), ExpandedRows = rows };
             if (_apiValueMenu is not null) _apiValueMenu.Text = "本对话 API 等值 · " + price + " USD（Standard）";
         }
@@ -1633,6 +1661,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         // Docked mode replaces the manual position model entirely: the placement comes from the live
         // UI Automation rectangle, never from a saved coordinate.
         var dock = ResolveDock(target);
+        _form.SetComposerTypeface(dock?.Typeface);
         _lastDock = dock ?? ComposerDockSnapshot.Empty;
         var waitingForConversation = dock is not null
             && !(_monitor?.PinActiveSession ?? false)
@@ -1652,6 +1681,15 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             // The fixed window-offset fallback is inaccurate on current Codex toolbar layouts.
             // Wait for a measured control/composer instead of drawing over model or send buttons.
             if (dock.Source == ComposerReferenceSource.Window) { _form.Hide(); return; }
+            // Codex draws its model/effort/permission menus inside its own window. A topmost strip
+            // would be painted across them, so it steps aside for as long as one is open.
+            if (dock.PopupOpen)
+            {
+                _interaction.HideForSpace();
+                StopOutsideClickPolling();
+                _form.Hide();
+                return;
+            }
             dockedSize = ResolveDockedCapsuleSize(target, dock);
             if (dockedSize is null)
             {
@@ -1873,7 +1911,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         hostWindow,
         _settings.AnchorMode,
         _interaction.State == OverlayVisualState.Expanded,
-        _presentation.ExpandedRows.Count,
+        _presentation.DetailRows.Count,
         _presentation.ShowContextProgress,
         manualTopLeft,
         _settings.OverlayScalePercent,
@@ -2405,7 +2443,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             target.HostWindow,
             _settings.AnchorMode,
             RequestExpanded: false,
-            _presentation.ExpandedRows.Count,
+            _presentation.DetailRows.Count,
             _presentation.ShowContextProgress,
             topLeft,
             ScalePercent: transition.Draft.ScalePercent));

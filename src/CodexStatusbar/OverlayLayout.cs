@@ -84,7 +84,7 @@ internal static class OverlayLayoutCalculator
     private const int CapsulePanelGapDip = 6;
     private const int CaptionSafetyGapDip = 8;
     private const int TitleLeftReserveDip = 160;
-    private const int PanelChromeHeightDip = 212;
+    private const int PanelChromeHeightDip = 244;
     private const int NormalRowHeightDip = 28;
     private const int MinimumRowHeightDip = 24;
 
@@ -377,7 +377,7 @@ internal static class OverlayLayoutCalculator
     }
 
     /// <summary>
-    /// Attaches the expanded panel below the strip, or above it when there is no room below. Shared
+    /// Centres the expanded panel below the strip, or above it when there is no room below. Shared
     /// by the docked and manual placements so both expand identically; the caption-button clipping
     /// only ever bites when the strip happens to sit in the title bar.
     ///
@@ -418,7 +418,7 @@ internal static class OverlayLayoutCalculator
             maximumCapsuleRight = Math.Min(maximumCapsuleRight, captionSafeRight);
         }
 
-        var minimumCapsuleX = workingArea.Left + panelWidth - capsuleScreen.Width;
+        var minimumCapsuleX = workingArea.Left;
         var maximumCapsuleX = maximumCapsuleRight - capsuleScreen.Width;
         if (maximumCapsuleX < minimumCapsuleX)
         {
@@ -429,7 +429,12 @@ internal static class OverlayLayoutCalculator
         {
             X = Clamp(capsuleScreen.X, minimumCapsuleX, maximumCapsuleX)
         };
-        var panelLeft = capsuleScreen.Right - panelWidth;
+        // Keep the trigger in place while opening. Only the panel shifts when centring it would
+        // cross a monitor edge; short waiting text should not right-align a much wider panel.
+        var panelLeft = Clamp(
+            capsuleScreen.Left - (panelWidth - capsuleScreen.Width) / 2,
+            workingArea.Left,
+            workingArea.Right - panelWidth);
         var panelGap = ScaleOverlayDip(CapsulePanelGapDip, dpi, scalePercent);
         var availableBelow = workingArea.Bottom - capsuleScreen.Bottom - panelGap;
         if (TryGetPanelSize(

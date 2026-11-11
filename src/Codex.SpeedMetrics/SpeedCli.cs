@@ -17,15 +17,15 @@ public static class SpeedCli
         using var observer = new SpeedObserver(!args.Contains("--offline"));
         observer.Watch(new[] { tid });
         var clock = Stopwatch.StartNew();
-        var display = new LiveSpeedDisplay();
+        var display = new ResponseSpeedDisplay();
         do
         {
             var reading = observer.Read(tid, path);
             if (args.Contains("--display-speed"))
             {
-                var shown = display.Read(reading, Environment.TickCount64);
-                Console.WriteLine(JsonSerializer.Serialize(new { Raw = reading, DisplayedTps = reading.Activity is null or "generating" or "working" or "thinking" or "command" or "searching" or "tool" ? shown.Rate : null, Activity = reading.Activity, ResponseAverageTps = reading.AverageTps,
-                    LiveDetailTps = shown.Rate, LiveDetailHeld = shown.Held }));
+                var shown = display.Read(reading);
+                Console.WriteLine(JsonSerializer.Serialize(new { Raw = reading, DisplayedTps = shown.Rate, Activity = reading.Activity, ResponseAverageTps = reading.AverageTps,
+                    Metric = "completed-response-throughput", Retained = shown.Held }));
             }
             else Console.WriteLine(JsonSerializer.Serialize(reading));
             Console.Out.Flush();

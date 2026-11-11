@@ -208,6 +208,10 @@ internal sealed class RolloutReader
 
         var bytes = ReadRange(stream, Offset, length);
         ParsedBytes += bytes.Length;
+        // Offset already points at the start of the unfinished line, so this read contains that
+        // fragment again. Prepending the remembered copy as well would duplicate it and turn the
+        // finished record into malformed JSON.
+        _pending = [];
         ConsumeCompleteLines(bytes);
         Offset = length - _pending.Length;
         return RolloutUpdateResult.Updated;
@@ -273,7 +277,7 @@ internal sealed class RolloutReader
         }
 
         var text = Encoding.UTF8.GetString(tail).Trim();
-        if (text.Length > 0 && text.StartsWith('{') && text.EndsWith('}'))
+        if (text.Length > 0 && text.StartsWith('{') && text.EndsWith('}') && IsCompleteJson(tail))
         {
             // A complete record whose trailing newline has not been flushed yet. A genuinely
             // half-written line never parses, so it stays pending for the next read.
@@ -291,6 +295,29 @@ internal sealed class RolloutReader
         }
 
         _pending = tail;
+    }
+
+    /// <summary>
+    /// A fragment cut right after a nested object also ends with '}'. Only a fragment that is a
+    /// whole JSON value may be consumed early; anything else must wait for the rest of its line.
+    /// </summary>
+    private static bool IsCompleteJson(byte[] fragment)
+    {
+        try
+        {
+            var reader = new System.Text.Json.Utf8JsonReader(fragment);
+            if (!System.Text.Json.JsonDocument.TryParseValue(ref reader, out var document))
+            {
+                return false;
+            }
+
+            document.Dispose();
+            return true;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
     }
 
     private void ParseLine(byte[] buffer, int start, int count)

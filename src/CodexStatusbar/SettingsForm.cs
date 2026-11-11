@@ -65,8 +65,9 @@ internal sealed class SettingsForm : Form
 
         var heading=AddLabel(CodexUi.T("用量设置", "Usage settings"),28,14,430,36,18,true);
         heading.TextAlign=ContentAlignment.MiddleLeft;
-        var close = AddButton("×",498,10,44,false);
-        close.Height=44;
+        // 32 DIP with a 16 DIP inset: the same size and corner position as the usage panel's gear.
+        var close = AddButton("×",504,16,32,false);
+        close.Height=32;
         close.AccessibleName = CodexUi.T("关闭设置", "Close settings");
         close.Click += (_, _) => Close();
         AddLabel(CodexUi.T("跟随 Codex 的外观，让指标和设置保持一致。", "A quieter view of your tokens, in Codex's own colors."), 29, 64, 494, 24, 9.5f, false, true);
@@ -436,7 +437,8 @@ internal sealed class GlassButton : Button
         {
             var x=ClientSize.Width/2f;var y=ClientSize.Height/2f;var u=DeviceDpi/96f;
             using var pen=new Pen(ForeColor,1.8f*u){StartCap=LineCap.Round,EndCap=LineCap.Round};
-            e.Graphics.DrawLine(pen,x-5*u,y-5*u,x+5*u,y+5*u);e.Graphics.DrawLine(pen,x+5*u,y-5*u,x-5*u,y+5*u);
+            var h=Math.Min(5f,ClientSize.Width/u*.14f)*u;
+            e.Graphics.DrawLine(pen,x-h,y-h,x+h,y+h);e.Graphics.DrawLine(pen,x+h,y-h,x-h,y+h);
         }
         else
         {

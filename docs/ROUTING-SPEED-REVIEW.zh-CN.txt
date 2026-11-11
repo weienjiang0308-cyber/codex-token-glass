@@ -1,3 +1,5 @@
+glass.23 更新：本文件下方保留 glass.22 历史交接。当前实现与验收以 GLASS-23.zh-CN.txt 为准，底栏已取消 Last 和可见文本窗口估算。
+
 Codex Token Glass 审查交接报告
 当前版本：1.0.0-rc3-glass.22
 日期：2026-11-06

@@ -1,0 +1,81 @@
+从源码重新审查测速算法（glass.26，2026-11-06）
+
+本次基准
+重新从本机 DeepSeek Harness app.asar 提取统计实现，而非把先前报告当作结论。
+@deepseek-ai/dsh-session-stats 版本：0.2.1-rc.5。
+projection.js SHA256：2e5ad32cf5375816e95a0bcaaa84130c3d2580f3f8c7022c8cd61b1dd038e445
+assistant-stream.js SHA256：7e0cc96a4d60aed34381b552f9cb4549d70df36dbd28c0630da4cd93fa44b7a1
+
+确认的5个缺陷与修复
+1. 零输出响应漏掉分母：100 token/1s，随后0 token/1s；原代码100 tok/s，Harness应为50。
+   修复：已知0与缺失计数分开，合法0输出仍计入其生成时长；有完整计时的0速度可显示。
+2. 跨轮次迟到item串入计时：B轮开始后，带A轮ID的item可能建立B轮响应起点。
+   修复：有明确turn_id且不匹配时拒绝计时。
+3. 异常结构记录：payload为字符串、根节点为null等可抛InvalidOperationException，打断后台读取。
+   修复：先校验JSON根节点与payload类型；无效输出计数字段不再默认为0。
+4. 同长度重写：读过100后，将文件同长度改成900，原读取器仍显示100。
+   修复：同长度时结合修改时间/创建时间判定重建，不再只检查文件长度。
+5. 只探测最后8MiB选择用量载体：新版usage位于更早位置、尾部全是工具输出时，旧token_count和新版记录都计数。
+   修复：全文件有界前缀预检选择载体，巨型工具记录不整体分配；反例完成数由2修正为1。
+以上5个独立反例均先在修改前复现，再在修改后通过。
+
+Harness逻辑对齐实践
+新增 HarnessThroughputProjection，使用本机原实现的标准化事件语义：
+- 首个非空正文/推理delta，或带工具名称/非空参数的delta确定首输出。
+- 同一步重试保留第一次attempt的首输出时间。
+- assistant/message完成后才累计；取消、缺usage、缺首输出、重复完成分别按原规则处理。
+- 合法0输出、0时长、时钟倒退clamp和长响应按原实现处理。
+58组事件（含40组随机多响应会话）直接执行本机Harness统计代码，再与C#核心做差分。
+token总和、生成时长、TPS、TTFT、请求时长均一致。
+结果已保存为tests/fixtures/harness-throughput-0.2.1-rc.5.json，后续测试可离线重放。
+这是给定标准化输入的逻辑对齐，不是对所有现实输入/网络情况的形式化证明。
+
+重要：生产取数适配尚未完成等价替换
+正式底栏仍以日志中的item起点和usage记录时间作为可计时响应的回退来源。
+新的Harness统计核心没有把这些item起点冒充首token事件。
+现有日志回退仍采用正时长和一小时上限等防错规则；与Harness的0时长clamp/长响应边界不完全相同。
+不能把“58组纯逻辑一致”写成“正式应用已经全链路100%一致”。
+
+新的真实桌面对照（自动流程完整成功）
+Unicode输入避免中文输入法改写，并在发送前核对输入框文字。
+实际桌面启动链路经过中转，取得新测试聊天的rawResponse/completed。
+同一个responseId：中转144 token，持久化日志144 token，完全一致。
+首个app-server暴露delta至完成：3542.1816ms。
+原日志item起点至usage：3543ms。
+差0.8184ms；该样本不能推出固定的准确率提升百分比。
+流程已自动恢复普通应用包启动，无全局CODEX_CLI_PATH修改。
+
+官方本机遥测实验
+只对诊断子进程设置otel配置，导出到127.0.0.1随机端口。
+接收端只落盘事件类型、时间、计数、会话关联字段；丢弃正文、账户属性、请求头和其他非白名单内容。
+本次获得22条传输相关记录：4个websocket_connect、10个websocket_request、8个response.completed。
+目标响应遥测output_token_count=144，reasoning_token_count=0，ttft_ms=2862。
+当前WebSocket路径没有逐片段delta日志；timeUnixNano为0，trace/span关联为空或全0，且没有可用responseId。
+所以该通道可交叉验证完成计数，但还不能无歧义地重建全部首片段/重试边界。
+未把批量导出到达时间当作模型输出时间。
+
+距离全链路等价仍缺什么
+1. 工具调用名称与参数的首个上游片段；app-server原型主要看到正文和推理delta。
+2. 精确对应Harness step/attempt/message的边界，覆盖重试、压缩、取消和内部请求。
+3. 旧会话、重连后的完整事件覆盖；experimentalRawEvents目前只在新thread/start申请。
+4. 正式状态栏接入持续观测、恢复与去重，以及缺数据时显式降级；不能把部分样本当完整会话。
+5. 更大范围的同请求对照，尤其工具优先、仅工具、隐藏推理、多响应和异常结束。
+
+能够准确表述的结论
+统计逻辑可以按同版本同输入逐项对齐，已完成58组实证。
+更直接的真实完成事件和官方计数已经读到，自动实测成功。
+目前仍不能声称100%还原Harness的取数、计时与更新效果，更不能保证永远无bug。
+插件直接拥有请求流；外围观测必须取得同等级事件，不能靠公式弥补缺失信息。
+
+验证与安装
+1019项测速/统计检查、437项应用检查、5项隔离路由检查通过。
+中转额外验证了长Unicode、重复完成、迟到轮次结束、测量日志不可写以及非观测模式EOF转发。
+glass.26已安装；中转与本机遥测仅用于临时实验，当前正常启动不保持这些覆盖。
+
+主要本机证据位于父工作区audit-probes/fresh-audit：
+before.json、after.json、differential-result.json、live-result.json、otel-summary.json、tests.txt、install.json。
+数据流实测证据：audit-probes/real-stream-validation.json、real-stream-comparison.json及对应trace目录。
+
+官方观测能力参考
+https://learn.chatgpt.com/docs/app-server
+https://learn.chatgpt.com/docs/config-file/config-advanced

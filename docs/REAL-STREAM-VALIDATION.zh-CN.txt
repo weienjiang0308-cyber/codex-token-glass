@@ -1,0 +1,45 @@
+本机真实 app-server 响应事件验证（2026-11-06）
+
+结论
+已在 Codex 桌面真正使用的 app-server 连接上捕获 rawResponse/completed，包含 responseId 与官方 outputTokens。
+已把一次真实测试响应与持久化 token_usage_record 按相同 responseId 匹配。
+这证明中转接入可以取得比普通 codex-ipc 更直接的响应完成事件；不等于取得完整上游 SSE 或服务端解码时钟。
+不能承诺100%还原 DeepSeek Harness，不能据一个样本声称准确率提升固定百分比。
+
+同响应对照
+中转 outputTokens：169
+日志 output_tokens：169
+两者完全一致。
+首个 app-server 暴露文本 delta → raw completion：5653.2451 ms。
+原 item_started 时间 → 持久化 usage 时间：5983 ms。
+时长差约329.755 ms；两个比值分别约29.89 tok/s与28.25 tok/s。
+这约5.8%的速度差是两种计时口径的差异，不是已知真实值下的准确率提升。
+
+三次尝试的完整事实
+1. 自定义中转启动与 initialize 成功，但 Windows默认编码破坏了部分UTF-8 JSONL，造成配置请求超时。
+   已明确设置中转两端UTF-8，并补测长中文、emoji、转义文本；真实只读config/read约36KB消息验证通过。
+2. 修正编码和Windows应用包身份后，自动流程过早判定新聊天输入框不存在。
+   已把固定2秒延迟改为等待控件出现且可用。
+3. 实际请求已经发出，捕获到35-token后台响应和169-token测试响应。
+   中文输入法改写了SendKeys输入，因此“精确提示词”匹配标记没有命中，自动脚本报告超时失败。
+   后续人工依据该次新建聊天、请求内容与同一responseId确认169-token记录确实属于本次诊断。
+   自动化端到端流程仍不应记为通过；真实事件采集及同响应用量一致性已取得证据。
+
+恢复与当前产品状态
+验证后恢复普通Windows应用入口启动，不保留CODEX_CLI_PATH全局覆盖。
+正式状态栏仍使用既有IPC/日志数据源；未把该原型未经完整验证地接入日常测速。
+用户未选择最近响应口径前，底栏仍为会话累计均速；累计均速变化很小不代表新数据没有到达。
+
+后续仍需验证
+- 使用不受输入法影响的输入方式，再跑完整自动流程。
+- 工具参数先输出、仅工具调用、隐藏推理、重试和并行输出时的首事件计时覆盖。
+- 既有线程的raw开关与新建线程不同，不能假设旧对话重启后自动支持。
+- 较长任务、多次响应、重连及授权消息转发的稳定性。
+
+本机证据（父工作区audit-probes目录）
+real-stream-validation-attempt1.json / attempt2.json / real-stream-validation.json
+real-stream-verified-sample.json
+real-stream-comparison.json
+real-relay-handshake.json
+real-stream-traces/（只记录事件元数据、计数与时刻，无正文和凭据）
+normal-launch-restored.json

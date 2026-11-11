@@ -166,7 +166,9 @@ public sealed class UsageLedger
             try
             {
                 using var doc = JsonDocument.Parse(line); var r = doc.RootElement;
-                if (!r.TryGetProperty("payload", out var p)) return;
+                // A non-object root or payload is a foreign record, not a reason to stop all statistics.
+                if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("payload", out var p)
+                    || p.ValueKind != JsonValueKind.Object) return;
                 string? S(JsonElement e, string k) => ResponseSpeedAnalyzer.Text(e, k);
                 long N(JsonElement e, string k) => ResponseSpeedAnalyzer.Number(e, k);
                 var type = S(r, "type");
@@ -199,7 +201,7 @@ public sealed class UsageLedger
                     _priorInput = input; _priorCached = cached; _priorOutput = output; _priorReasoning = reasoning;
                 }
             }
-            catch (JsonException) { Errors++; }
+            catch (Exception e) when (e is JsonException or InvalidOperationException) { Errors++; }
         }
     }
 }

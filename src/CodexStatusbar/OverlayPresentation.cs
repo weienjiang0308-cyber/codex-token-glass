@@ -20,8 +20,18 @@ internal sealed record OverlayPresentation(
     IReadOnlyList<string>? CapsuleVariants = null,
     string? SpeedExplanation = null,
     bool LiveReadingHeld = false,
-    string? ConversationTitle = null)
+    string? ConversationTitle = null,
+    string? TimingCoverage = null)
 {
+    public IReadOnlyList<OverlayMetric> DetailRows
+    {
+        get
+        {
+            var rows = ExpandedRows.Where(r => r.Field is not DisplayField.PeakSpeed and not DisplayField.AverageSpeed and not DisplayField.Tps).ToList();
+            if (Secondary.Field == DisplayField.Total && rows.All(r => r.Field != DisplayField.Total)) rows.Insert(0, Secondary);
+            return rows;
+        }
+    }
     /// <summary>
     /// The collapsed strip's text at every supported verbosity, widest first. The last entry is the
     /// narrowest form that still carries all three metrics; callers pick the first one that fits and
@@ -84,15 +94,22 @@ internal static class OverlayPresentationBuilder
         DisplayField visibleFields)
     {
         ValidateHighlightedFields(primaryField, secondaryField);
+        // The strip is sized from its variants, so the status itself must be one of them: drawing
+        // a longer sentence into a window measured for another string is what produced "…".
+        // The sentence carries no trailing ellipsis either, and falls back to a short word.
+        var status = SanitizeSingleLine(statusText).Trim().TrimEnd('…', '.', ' ');
+        IReadOnlyList<string> variants = status.Length == 0
+            ? [WaitingCapsuleText, "Connecting"]
+            : [status, CodexUi.T("等待中", "Waiting")];
         return new OverlayPresentation(
             CreateWaitingMetric(primaryField),
             CreateWaitingMetric(secondaryField),
             CreateExpandedRows(visibleFields, primaryField, secondaryField, CreateWaitingMetric),
             0,
             false,
-            SanitizeSingleLine(statusText),
-            WaitingCapsuleText,
-            [WaitingCapsuleText, "Connecting"]);
+            status,
+            variants[0],
+            variants);
     }
 
     public static OverlayPresentation Create(
@@ -117,13 +134,14 @@ internal static class OverlayPresentationBuilder
             null,
             BuildCapsuleVariants(snapshot)[0],
             BuildCapsuleVariants(snapshot),
-            CodexUi.T(snapshot.TpsHeld ? "文本测速 · 保留上次读数（非当前输出）" : "文本测速 · 2 秒平滑 · 每秒更新",
-                snapshot.TpsHeld ? "Text speed · last reading held" : "Text speed · 2s smoothing · 1s updates"), snapshot.TpsHeld, snapshot.Title);
+            CodexUi.T($"输出速度 · 官方输出 / 生成时长 · 已计时 {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} 响应",
+                $"Throughput · output / generation time · {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} timed responses"),
+            snapshot.TpsHeld, snapshot.Title, $"{snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount}");
     }
 
     public static string FormatTokenCount(long value) => value switch
     {
-        >= 1_000_000 => (value / 1_000_000d).ToString("0.00", CultureInfo.InvariantCulture) + "M",
+        >= 999_950 => (value / 1_000_000d).ToString("0.00", CultureInfo.InvariantCulture) + "M",
         >= 1_000 => (value / 1_000d).ToString("0.0", CultureInfo.InvariantCulture) + "k",
         _ => value.ToString("N0", CultureInfo.InvariantCulture)
     };
@@ -164,7 +182,7 @@ internal static class OverlayPresentationBuilder
             DisplayField.ContextPercent => "上下文百分比",
             DisplayField.Reasoning => "推理输出",
             DisplayField.Thread => "会话 ID",
-            DisplayField.Tps => "可见文本实时估算",
+            DisplayField.Tps => "已完成响应输出速度",
             DisplayField.TurnDuration => "本轮任务用时",
             DisplayField.ModelTime => "本轮模型生成用时",
             DisplayField.FirstTokenTime => "首 token 等待时间",
@@ -176,27 +194,29 @@ internal static class OverlayPresentationBuilder
 
     /// <summary>
     /// Compact visible-text speed, token total and known cache ratio. Working phases retain
-    /// the last valid text reading beside the state; Ready/opening/connecting omit it.
+    /// the last valid text reading beside the state. Hold semantics live in the details.
     /// Missing metrics are omitted. Response-average speed is never used as a fallback.
     /// </summary>
     public static IReadOnlyList<string> BuildCapsuleVariants(TokenSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var parts=new List<string>();
-        var status=snapshot.Activity switch { "command"=>"Command", "searching"=>"Searching", "tool"=>"Using tools",
-            "thinking"=>"Thinking", "opening"=>"Opening chat", "connecting"=>"Connecting", "ready"=>"Ready", "working"=>"Working", _=>null };
-        var speed=status ?? (snapshot.Tps is double rate && rate>0 && double.IsFinite(rate) ? $"Speed {rate.ToString("0.0",CultureInfo.InvariantCulture)} tok/s"
-            :snapshot.ToolRunning ? "Command" : snapshot.Streaming ? "Waiting for output" : "Ready");
-        parts.Add(speed);
-        if (snapshot.Activity is "working" or "thinking" or "command" or "searching" or "tool" &&
-            snapshot.Tps is double lastRate && lastRate > 0 && double.IsFinite(lastRate))
-            parts.Add($"Last {lastRate.ToString("0.0",CultureInfo.InvariantCulture)} tok/s");
-        if(snapshot.HasUsage)parts.Add("Tokens "+MetricFormat.CompactTokens(snapshot.InputTokens+snapshot.OutputTokens>0
-            ?snapshot.InputTokens+snapshot.OutputTokens:snapshot.TotalTokens));
-        if(snapshot.InputTokens>0)parts.Add("Cache hit "+MetricFormat.FormatCachePercentCompact(snapshot.InputTokens,snapshot.CachedInputTokens));
-        var full=string.Join(" · ",parts);
-        var compact=full.Replace("Waiting for output","Waiting").Replace("Speed ","").Replace("Tokens ","").Replace("Cache hit ","Hit ");
-        return [full,compact,compact.Replace(" tok/s"," t/s")];
+        var parts = new List<string>();
+        if (snapshot.Tps is double rate && rate >= 0 && double.IsFinite(rate))
+            parts.Add($"{rate.ToString("0.0", CultureInfo.InvariantCulture)} tok/s");
+        if (snapshot.HasUsage) parts.Add("Tokens " + MetricFormat.CompactTokens(
+            snapshot.InputTokens + snapshot.OutputTokens > 0 ? snapshot.InputTokens + snapshot.OutputTokens : snapshot.TotalTokens));
+        if (snapshot.InputTokens > 0) parts.Add("Cache hit " + MetricFormat.FormatCachePercentCompact(snapshot.InputTokens, snapshot.CachedInputTokens));
+        var status = snapshot.Activity switch
+        {
+            "command" => "Command", "searching" => "Searching", "tool" => "Using tools",
+            "thinking" => "Thinking", "opening" => "Opening", "connecting" => "Connecting",
+            "ready" => "Ready", "generating" => "Output", "working" => "Working",
+            _ => snapshot.ToolRunning ? "Command" : snapshot.Streaming ? "Working" : "Ready"
+        };
+        parts.Insert(0, status);
+        var full = string.Join(" · ", parts);
+        var compact = full.Replace("Tokens ", "").Replace("Cache hit ", "Hit ");
+        return [full, compact, compact.Replace(" tok/s", " t/s")];
 
     }
 
@@ -277,9 +297,9 @@ internal static class OverlayPresentationBuilder
                 DisplayField.ContextPercent => ("Context", "Context used"),
                 DisplayField.Reasoning => ("Reasoning", "Reasoning tokens"),
                 DisplayField.Thread => ("Thread", "Conversation"),
-                DisplayField.Tps => ("Est≈", "Visible text · live estimate (2 s)"),
+                DisplayField.Tps => ("TPS", "Completed-response throughput"),
                 DisplayField.TurnDuration => ("Elapsed", "Task elapsed"),
-                DisplayField.ModelTime => ("Timed", "Timed completed-response duration"),
+                DisplayField.ModelTime => ("Timed", "Timed generation"),
                 DisplayField.FirstTokenTime => ("First token", "Time to first token"),
                 DisplayField.PeakSpeed => ("Peak", "Peak response speed"),
                 DisplayField.AverageSpeed => ("Average", "Completed-response average"),
@@ -298,9 +318,9 @@ internal static class OverlayPresentationBuilder
             DisplayField.ContextPercent => ("上下文", "上下文占用"),
             DisplayField.Reasoning => ("推理", "推理输出"),
             DisplayField.Thread => ("会话", "会话"),
-            DisplayField.Tps => ("实时估算", "可见文本实时估算（2 秒）"),
+            DisplayField.Tps => ("输出速度", "已完成响应输出速度"),
             DisplayField.TurnDuration => ("用时", "本轮任务用时"),
-            DisplayField.ModelTime => ("计时", "已完成响应计时总和"),
+            DisplayField.ModelTime => ("计时", "已计时生成时长"),
             DisplayField.FirstTokenTime => ("首字", "首 token 等待"),
             DisplayField.PeakSpeed => ("峰值", "本轮峰值响应速度"),
             DisplayField.AverageSpeed => ("平均", "已计时响应平均速度"),
@@ -310,7 +330,7 @@ internal static class OverlayPresentationBuilder
 
     /// <summary>TPS cell used by the expanded panel and the tray menu: e.g. "243 tok/s", "-- tok/s".</summary>
     private static string FormatTpsValue(TokenSnapshot snapshot) =>
-        (snapshot.Tps is double speed ? "≈" + speed.ToString("0.0", CultureInfo.InvariantCulture) : "—") + " tok/s";
+        (snapshot.Tps is double speed ? speed.ToString("0.0", CultureInfo.InvariantCulture) : "—") + " tok/s";
 
     private static string ExactTokens(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 

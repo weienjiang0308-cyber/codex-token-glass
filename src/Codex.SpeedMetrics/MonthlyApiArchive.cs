@@ -13,6 +13,9 @@ public static class MonthlyApiArchive
         {
             if(rows.TryGetValue(group.Key,out var old)&&old.Closed&&old.UnpricedResponses==0)continue;
             var sum=UsageTotals.Sum(group);
+            // A closed month may still gain prices, but fewer responses means history was deleted:
+            // keep the archived total instead of shrinking it to whatever logs remain.
+            if(old is {Closed:true}&&sum.Responses<old.Responses)continue;
             rows[group.Key]=new(group.Key,sum.Total,sum.KnownApiUsd,sum.Responses,sum.UnpricedResponses,
                 string.CompareOrdinal(group.Key,current)<0);
         }

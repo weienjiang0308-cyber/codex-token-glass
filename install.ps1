@@ -28,7 +28,8 @@ function Run-Hidden([string]$File,[string[]]$Arguments,[string]$Name){
 if($FromSource){
     $sdk=Get-Command dotnet -ErrorAction SilentlyContinue
     $hasTen=$false
-    if($sdk){$hasTen=((& $sdk.Source --list-sdks) -match '^10\.') -ne $null}
+    # @() keeps -match a filter even when exactly one SDK is installed (a lone string would yield $false, and $false -ne $null is true).
+    if($sdk){$hasTen=@(@(& $sdk.Source --list-sdks) -match '^10\.').Count -gt 0}
     if(-not $hasTen){
         Write-Output 'Downloading a verified private .NET 10 SDK for this build; system SDKs are unchanged.'
         $metadata=Invoke-RestMethod -Uri 'https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json' -Headers $headers

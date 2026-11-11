@@ -116,6 +116,15 @@ internal static class Program
     private static int Main(string[] args)
     {
         Codex.SpeedMetrics.HostTokenizer.Initialize();
+        if (args.Length >= 2 && args[0] == "--composer-font-probe")
+        {
+            using var tracker = new ComposerDockTracker(() => new IntPtr(long.Parse(args[1]))) { Enabled = true };
+            tracker.Start();
+            var until = DateTime.UtcNow.AddSeconds(6);
+            while (tracker.Latest.Typeface is null && DateTime.UtcNow < until) Thread.Sleep(50);
+            Console.WriteLine(JsonSerializer.Serialize(new { tracker.Latest.Typeface, tracker.Latest.Source, tracker.Latest.Failure, tracker.Latest.PopupOpen }));
+            return 0;
+        }
         if(args.Length>=2 && args[0]=="--settings-controls-probe")return SettingsControlsProbe.Run(args[1]);
         if(args.Length>=3 && args[0]=="--visible-route-watch")
         {
@@ -137,6 +146,14 @@ internal static class Program
         if(args.Length>=2 && args[0]=="--settings-corner-probe") return SettingsCornerProbe.Run(args[1],args.Length>=3?int.Parse(args[2]):0);
         if (args.Length >= 3 && args[0] == "--resolve-title-json")
         {
+            if (args.Length >= 4)
+            {
+                // Optional fourth value: the IPC-followed thread, used only to pick among equal names.
+                var unique = StateDatabase.TryReadUniqueDisplayName(args[1], args[2]);
+                var route = VisibleConversationMonitor.Disambiguate(new(unique?.Id, args[2], "probe"), args[3], args[1]);
+                Console.WriteLine(JsonSerializer.Serialize(new { Id = route.ThreadId, route.Source }));
+                return 0;
+            }
             Console.WriteLine(JsonSerializer.Serialize(StateDatabase.TryReadUniqueDisplayName(args[1], args[2])));
             return 0;
         }
@@ -814,7 +831,7 @@ internal sealed class CodexIpcActiveThreadMonitor : IDisposable
 internal sealed class TokenLogMonitor : IDisposable
 {
     private readonly Codex.SpeedMetrics.SpeedObserver _speedObserver;
-    private readonly Codex.SpeedMetrics.LiveSpeedDisplay _liveSpeedDisplay = new();
+    private readonly Codex.SpeedMetrics.ResponseSpeedDisplay _responseSpeedDisplay = new();
     private static readonly TimeSpan StateDatabaseRefreshInterval = TimeSpan.FromSeconds(5);
 
     private readonly string _sessionRoot;
@@ -822,6 +839,7 @@ internal sealed class TokenLogMonitor : IDisposable
     private readonly FileSystemWatcher? _watcher;
     private readonly ConcurrentQueue<string> _changedPaths = new();
     private readonly ConcurrentDictionary<string, bool> _rootSessionCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (RolloutReader Reader, string Path, string Baseline)> _readers = new(StringComparer.Ordinal);
 
     private RolloutReader? _reader;
     private StateThreadRecord? _stateRecord;
@@ -831,6 +849,7 @@ internal sealed class TokenLogMonitor : IDisposable
     private string _baselineSource = "none";
     private string? _cachedSignature;
     private TokenSnapshot? _lastSnapshot;
+    private bool _initialSnapshotPending;
     private DateTime _lastStateDatabaseQueryUtc = DateTime.MinValue;
 
     // Resolved once: enumerating processes on every poll would be wasteful, and the client's PID
@@ -920,6 +939,11 @@ internal sealed class TokenLogMonitor : IDisposable
             SelectFromStateDatabase();
         }
 
+        if (_initialSnapshotPending)
+        {
+            _initialSnapshotPending = false;
+            return BuildSnapshot(readHistory: false);
+        }
         DrainChangedPaths();
         EnsureReader();
         RefreshReader();
@@ -1052,6 +1076,11 @@ internal sealed class TokenLogMonitor : IDisposable
 
         try
         {
+            // The database already maps IDs to rollout paths; directory traversal is recovery only.
+            var known = StateDatabase.TryReadThread(_stateDatabasePath, threadId)?.RolloutPath;
+            if (!string.IsNullOrWhiteSpace(known) && File.Exists(known)
+                && (!requireDesktopRoot || IsRootDesktopSession(known))) return known;
+            if (_readers.TryGetValue(threadId, out var cached) && File.Exists(cached.Path)) return cached.Path;
             return Directory.EnumerateFiles(_sessionRoot, $"*{threadId}.jsonl", SearchOption.AllDirectories)
                 .Where(path => !requireDesktopRoot || IsRootDesktopSession(path))
                 .OrderByDescending(SafeGetLastWriteUtc)
@@ -1144,8 +1173,14 @@ internal sealed class TokenLogMonitor : IDisposable
 
     private void SwitchActiveLog(string? path, string? threadId, string source, StateThreadRecord? record = null)
     {
-        _liveSpeedDisplay.Clear();
+        if (_selectedThreadId is { } previous && _reader is not null && _readerPath is not null)
+        {
+            _readers.Remove(previous);
+            _readers[previous] = (_reader, _readerPath, _baselineSource);
+            while (_readers.Count > 8) _readers.Remove(_readers.Keys.First());
+        }
         _selectedThreadId = threadId;
+        _speedObserver.Watch(threadId is null ? Array.Empty<string>() : new[] { threadId });
         _selectionSource = source;
         _stateRecord = record ?? TryReadStateRecord(threadId);
         _reader = null;
@@ -1154,10 +1189,16 @@ internal sealed class TokenLogMonitor : IDisposable
         _cachedSignature = null;
         _lastSnapshot = null;
         ActiveSessionVersion++;
+        _initialSnapshotPending = true;
+        if (threadId is not null && _readers.TryGetValue(threadId, out var restored)
+            && string.Equals(restored.Path, path, StringComparison.OrdinalIgnoreCase))
+        {
+            _reader = restored.Reader; _readerPath = restored.Path; _baselineSource = restored.Baseline;
+            return;
+        }
         if (path is not null)
         {
             _readerPath = path;
-            EnsureReader();
         }
     }
 
@@ -1178,7 +1219,7 @@ internal sealed class TokenLogMonitor : IDisposable
         }
     }
 
-    private TokenSnapshot BuildSnapshot()
+    private TokenSnapshot BuildSnapshot(bool readHistory = true)
     {
         var state = _reader?.State;
         var threadId = _selectedThreadId ?? string.Empty;
@@ -1194,6 +1235,7 @@ internal sealed class TokenLogMonitor : IDisposable
         var input = state?.InputTokens ?? 0;
         var cached = state?.CachedInputTokens ?? 0;
         var output = state?.OutputTokens ?? 0;
+        var reasoning = state?.ReasoningOutputTokens ?? 0;
         if (state is null && _stateRecord is not null)
         {
             // No rollout file yet (or unreadable): state_5.sqlite's official thread total is the only
@@ -1203,12 +1245,20 @@ internal sealed class TokenLogMonitor : IDisposable
         }
 
         Codex.SpeedMetrics.SpeedReading? speed = null;
-        if (!string.IsNullOrEmpty(threadId) && !string.IsNullOrEmpty(_readerPath))
+        if (!string.IsNullOrEmpty(threadId))
         {
             _speedObserver.Watch(new[] { threadId });
-            speed = _speedObserver.Read(threadId, _readerPath);
+            speed = readHistory && !string.IsNullOrEmpty(_readerPath)
+                ? _speedObserver.Read(threadId, _readerPath) : _speedObserver.ReadLive(threadId);
         }
-        var display = speed is null ? (Rate: (double?)null, Held: false) : _liveSpeedDisplay.Read(speed, Environment.TickCount64);
+        // Desktop broadcasts official cumulative usage directly. Never replace a newer
+        // rollout total with a stale IPC snapshot, or estimate counters from rendered text.
+        if (_speedObserver.ReadUsage(threadId) is { } liveUsage && liveUsage.Total >= total)
+        {
+            total = liveUsage.Total; input = liveUsage.Input; cached = liveUsage.Cached;
+            output = liveUsage.Output; reasoning = liveUsage.Reasoning; baselineSource = "ipc-usage";
+        }
+        var display = speed is null ? (Rate: (double?)null, Held: false) : _responseSpeedDisplay.Read(speed);
         var tps = display.Rate;
         var lastTurnTps = speed?.AverageTps;
         var warnings = state is null ? null : state.Warnings.ToArray();
@@ -1279,7 +1329,7 @@ internal sealed class TokenLogMonitor : IDisposable
             input,
             cached,
             output,
-            state?.ReasoningOutputTokens ?? 0,
+            reasoning,
             state?.ContextUsedTokens ?? 0,
             state?.ContextWindowTokens ?? 0,
             SafeGetLastWriteUtc(path),
@@ -1312,13 +1362,14 @@ internal sealed class TokenLogMonitor : IDisposable
             _lastSnapshot = _lastSnapshot with
             {
                 Tps = display.Rate,
+                Streaming = speed.LiveConnected ? speed.Streaming : _lastSnapshot.Streaming,
                 LastTurnTps = speed.AverageTps,
                 AverageTps = speed.AverageTps,
                 PeakTps = speed.PeakResponseTps,
                 TurnGenerationMs = speed.TimedMilliseconds,
                 MergedModelElapsedMs = speed.TimedMilliseconds,
                 TpsHeld = display.Held,
-                TpsState = display.Held ? "last-visible-text-reading-held" : "visible-text-estimate",
+                TpsState = display.Held ? "completed-response-throughput-retained" : "completed-response-throughput",
                 TimedResponseCount = speed.TimedResponses,
                 CompletedResponseCount = speed.CompletedResponses,
                 LiveEstimateConnected = speed.LiveConnected,

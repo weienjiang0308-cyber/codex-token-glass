@@ -111,6 +111,8 @@ internal static class SelfTest
 
         Section("composer dock: UI Automation reference, native type size, responsive ladder");
         RunComposerDock(stdout);
+        Section("expanded panel: centred trigger and monitor edge containment");
+        RunCentredPanel();
 
         Section("lifecycle: Codex identity, start with Windows, attach ladder");
         RunLifecycle(stdout);
@@ -122,6 +124,46 @@ internal static class SelfTest
         stdout.WriteLine($"checks: {_checks}   failures: {_failures}");
         stdout.WriteLine($"RESULT: {(_failures == 0 ? "PASS" : "FAIL")}");
         return _failures == 0 ? 0 : 1;
+    }
+
+    private static void RunCentredPanel()
+    {
+        foreach (var dpi in new[] { 96u, 144u, 192u })
+        {
+            var unit = (int)(dpi / 48);
+            // A monitor left of the primary display also exercises negative screen coordinates.
+            var area = new IntRect(-1200 * unit, 0, 1200 * unit, 900 * unit);
+            var host = new CodexWindowInfo(new IntPtr(1), area, area, null, area, dpi, default);
+            var size = OverlayLayoutCalculator.GetCapsuleSizeForText(208, dpi, 100);
+            foreach (var edge in new[] { "left", "centre", "right" })
+            foreach (var above in new[] { false, true })
+            {
+                var x = edge == "left" ? area.Left + 10 : edge == "right" ? area.Right - size.Width - 10
+                    : area.Left + (area.Width - size.Width) / 2;
+                var y = above ? area.Bottom - size.Height - 20 : 100;
+                var request = new OverlayLayoutRequest(host, AnchorMode.TitleBarTopRight, false, 3, false,
+                    new Point(x, y), CapsuleSize: size);
+                var collapsed = OverlayLayoutCalculator.Calculate(request);
+                var expanded = OverlayLayoutCalculator.Calculate(request with { RequestExpanded = true });
+                var panel = expanded.PanelBounds with
+                {
+                    X = expanded.WindowBounds.X + expanded.PanelBounds.X,
+                    Y = expanded.WindowBounds.Y + expanded.PanelBounds.Y
+                };
+                var label = $"{dpi} DPI {edge} {(above ? "above" : "below")}";
+                Check(label + ": panel opens in the available direction",
+                    expanded.State == OverlayVisualState.Expanded && expanded.ExpansionDirection ==
+                    (above ? ExpansionDirection.Up : ExpansionDirection.Down), true);
+                Check(label + ": opening leaves the trigger in place",
+                    expanded.WindowBounds.X + expanded.CapsuleBounds.X == collapsed.WindowBounds.X
+                    && expanded.WindowBounds.Y + expanded.CapsuleBounds.Y == collapsed.WindowBounds.Y, true);
+                Check(label + ": panel stays within monitor bounds",
+                    panel.Left >= area.Left && panel.Right <= area.Right && panel.Top >= area.Top && panel.Bottom <= area.Bottom, true);
+                Check(label + ": panel centres or stops at the nearest screen edge",
+                    edge == "left" ? panel.Left == area.Left : edge == "right" ? panel.Right == area.Right
+                    : Math.Abs(panel.Left + panel.Right - collapsed.WindowBounds.Left - collapsed.WindowBounds.Right) <= 1, true);
+            }
+        }
     }
 
     private static void RunObserverRouteIsolation()
@@ -425,6 +467,13 @@ internal static class SelfTest
             "vertical centre matches the toolbar row, not the off-centre icon",
             docked.WindowBounds.Y + (docked.WindowBounds.Height / 2),
             context.RowCenterY);
+        var dockedExpanded = OverlayLayoutCalculator.Calculate(new OverlayLayoutRequest(
+            host, AnchorMode.TitleBarTopRight, true, 3, false, null, 100, size, context, 10d));
+        Check("docked panel is centred above its status strip",
+            dockedExpanded.State == OverlayVisualState.Expanded
+            && dockedExpanded.ExpansionDirection == ExpansionDirection.Up
+            && Math.Abs(2 * dockedExpanded.PanelBounds.X + dockedExpanded.PanelBounds.Width
+                - 2 * dockedExpanded.CapsuleBounds.X - dockedExpanded.CapsuleBounds.Width) <= 1, true);
 
         // A gap wider than the strip allows is clamped up to the minimum rather than producing a
         // negative gap that would overlap the Context control.
@@ -875,17 +924,25 @@ internal static class SelfTest
             DisplayFieldRules.SupportedMask);
         Check("normal speed metrics cannot be replaced by waiting/status text", presentation.StatusText is null, true);
         Check("compact strip omits long labels", presentation.CapsuleText!.Contains("≈") || presentation.CapsuleText.Contains("实时"), false);
-        Check("primary speed definition remains available in details", presentation.SpeedExplanation!.Contains(CodexUi.T("文本测速", "Text speed")), true);
+        Check("primary speed definition remains available in details", presentation.SpeedExplanation!.Contains(CodexUi.T("输出速度", "Throughput")), true);
         var distinctSpeeds = snapshot with { Tps = 3.5, AverageTps = 51.4 };
+        var detectedFont = ComposerTypeface.Resolve(SystemFonts.MessageBoxFont!.FontFamily.Name, 12);
+        Check("available native toolbar family is retained", detectedFont.Source, "uia-toolbar");
+        Check("larger native toolbar type is respected", detectedFont.Points, 12d, 1e-9);
+        var fallbackFont = ComposerTypeface.Resolve("Codex-Missing-Font-For-Probe", double.NaN);
+        Check("missing family is explicitly marked as a fallback", fallbackFont.Source, "uia-font-unavailable-fallback");
+        Check("invalid native font size uses legible minimum", fallbackFont.Points, 9.75d, 1e-9);
+        Check("toolbar starts with status and retains speed then tokens then cache",
+            OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with { Activity = "ready" }).StartsWith("Ready · 3.5 tok/s · Tokens"), true);
         Check("compact strip uses live text speed rather than response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds).Contains("3.5 tok/s"), true);
         Check("missing live telemetry never falls back to the response average", OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with { Tps = null }).Contains("Ready"), true);
         Check("unavailable fields do not form dash placeholders",!OverlayPresentationBuilder.BuildCapsuleText(snapshot with{Tps=null,InputTokens=0,OutputTokens=0,TotalTokens=0}).Contains("--"),true);
-        Check("streaming without a text sample reports waiting",OverlayPresentationBuilder.BuildCapsuleText(snapshot with{Tps=null,Streaming=true}).Contains("Waiting for output"),true);
-        Check("command state retains the last text rate alongside it",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="command",ToolRunning=true}).StartsWith("Command · Last 3.5 tok/s"),true);
-        Check("working state retains the last rate rather than the response average",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="working",TpsHeld=true}).StartsWith("Working · Last 3.5 tok/s"),true);
+        Check("streaming without a text sample reports waiting",OverlayPresentationBuilder.BuildCapsuleText(snapshot with{Tps=null,Streaming=true}).StartsWith("Working ·"),true);
+        Check("command state retains the last text rate alongside it",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="command",ToolRunning=true}).StartsWith("Command ·"),true);
+        Check("working state retains the last rate rather than the response average",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="working",TpsHeld=true}).StartsWith("Working · 3.5 tok/s · Tokens"),true);
         Check("working before first output does not invent a speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="working",Tps=null}).StartsWith("Working · Tokens"),true);
-        Check("completed task removes the working state and held speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="ready",TpsHeld=true}).StartsWith("Ready · Tokens"),true);
-        Check("generating removes working and last labels",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="generating"}).StartsWith("Speed 3.5 tok/s"),true);
+        Check("completed task keeps speed and shows Ready alongside it",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="ready",TpsHeld=true}).StartsWith("Ready ·"),true);
+        Check("generating removes working and last labels",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="generating"}).StartsWith("Output · 3.5 tok/s"),true);
         Check("invalid held speed is omitted",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="working",Tps=double.NaN}).Contains("Last"),false);
         Check("thinking state is explicit instead of a zero speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="thinking"}).StartsWith("Thinking ·"),true);
         Check("visible output restores live speed",OverlayPresentationBuilder.BuildCapsuleText(distinctSpeeds with{Activity="generating"}).Contains("3.5 tok/s"),true);

@@ -43,7 +43,9 @@ internal sealed record ComposerDockSnapshot(
     string ClassName,
     long WindowHandle,
     int ElementIndex,
-    string? Failure)
+    string? Failure,
+    ComposerTypeface? Typeface = null,
+    bool PopupOpen = false)
 {
     public static readonly ComposerDockSnapshot Empty = new(
         ComposerReferenceSource.None,
@@ -141,6 +143,17 @@ internal sealed class ComposerDockTracker : IDisposable
     private long _revision;
     private long _resyncRequestCount;
     private long _lastReadTicks;
+
+    /// <summary>
+    /// True while one of the composer's own menu buttons (model, effort, permissions, attachments)
+    /// reports ExpandCollapseState.Expanded. Codex draws that menu inside its own window, so a
+    /// topmost strip would be painted over it; the owner hides the strip for as long as this holds.
+    /// </summary>
+    private volatile bool _popupOpen;
+
+    /// <summary>Cadence while menu buttons are being watched: an opened menu must clear the strip promptly.</summary>
+    private const int PopupWatchIntervalMs = 90;
+    private volatile bool _watchingPopups;
 
     /// <summary>
     /// Requested interval for the cheap re-read, in milliseconds. The position fast path raises this
@@ -301,9 +314,13 @@ internal sealed class ComposerDockTracker : IDisposable
         AutomationElement? composer = null;
         AutomationElement? reference = null;
         AutomationElement? model = null;
+        var expandable = new List<AutomationElement>(8);
         var lastReferenceRect = default(IntRect);
         var walksRemaining = 2;
         var lastWalkAt = DateTime.UtcNow;
+        var lastFontAt = 0L;
+        var fontWindow = 0L;
+        ComposerTypeface? typeface = null;
 
         while (!token.IsCancellationRequested)
         {
@@ -311,6 +328,7 @@ internal sealed class ComposerDockTracker : IDisposable
             {
                 if (!_enabled)
                 {
+                    expandable.Clear(); _popupOpen = false; _watchingPopups = false;
                     Publish(ComposerDockSnapshot.Empty);
                     reference = null;
                     composer = null;
@@ -324,6 +342,7 @@ internal sealed class ComposerDockTracker : IDisposable
                 var hwnd = _windowProvider();
                 if (hwnd == IntPtr.Zero)
                 {
+                    expandable.Clear(); _popupOpen = false; _watchingPopups = false;
                     Publish(ComposerDockSnapshot.Empty);
                     reference = null;
                     composer = null;
@@ -341,6 +360,24 @@ internal sealed class ComposerDockTracker : IDisposable
                     composer = null;
                     model = null;
                     walksRemaining = 2;
+                    expandable.Clear();
+                }
+
+                // One property read per held menu button. A button React has replaced can no longer
+                // answer; a (rate-limited) walk then re-collects the live ones.
+                var popupOpen = false;
+                var staleButton = false;
+                foreach (var button in expandable)
+                {
+                    var expanded = TryIsExpanded(button);
+                    if (expanded is null) staleButton = true;
+                    else if (expanded.Value) popupOpen = true;
+                }
+
+                _popupOpen = popupOpen;
+                if (staleButton && walksRemaining == 0 && DateTime.UtcNow - lastWalkAt > RecoveryResyncInterval)
+                {
+                    walksRemaining = 1;
                 }
 
                 // Fast path: re-read the held element only. One cross-process call instead of a walk.
@@ -385,7 +422,10 @@ internal sealed class ComposerDockTracker : IDisposable
                 if (walksRemaining > 0 || lostReference || (hadContextReference && reference is null) || composer is null)
                 {
                     var walkStarted = Environment.TickCount64;
-                    var snapshot = Walk(hwnd, ref composer, ref reference, ref model);
+                    var snapshot = Walk(hwnd, ref composer, ref reference, ref model, expandable);
+                    _popupOpen = expandable.Any(button => TryIsExpanded(button) == true);
+                    if (fontWindow != hwnd.ToInt64()) typeface = null;
+                    snapshot = snapshot with { Typeface = typeface };
                     Interlocked.Increment(ref _walkCount);
                     Interlocked.Exchange(ref _lastWalkMilliseconds, Environment.TickCount64 - walkStarted);
                     Interlocked.Exchange(ref _lastReadTicks, Environment.TickCount64);
@@ -393,6 +433,13 @@ internal sealed class ComposerDockTracker : IDisposable
                     walksRemaining--;
                     lastReferenceRect = snapshot.ReferenceRect;
                     Publish(snapshot);
+                    if (fontWindow != hwnd.ToInt64() || Environment.TickCount64 - lastFontAt >= 10000)
+                    {
+                        // Geometry is published before optional typography inspection.
+                        typeface = ComposerTypeface.Read(model);
+                        fontWindow = hwnd.ToInt64(); lastFontAt = Environment.TickCount64;
+                        Publish(snapshot with { Typeface = typeface });
+                    }
                 }
                 else if (!fastRect.IsEmpty)
                 {
@@ -405,6 +452,10 @@ internal sealed class ComposerDockTracker : IDisposable
                         Failure = null
                     });
                 }
+
+                // Neither branch above publishes when nothing moved; the menu state still has to.
+                _watchingPopups = expandable.Count > 0;
+                Publish(_latest);
 
                 // The live answer to "can the next iteration be a cheap re-read". Recomputed every pass
                 // from the element the loop is actually holding.
@@ -443,7 +494,8 @@ internal sealed class ComposerDockTracker : IDisposable
 
     private void Sleep(CancellationToken token)
     {
-        var interval = TimeSpan.FromMilliseconds(_pollIntervalMs);
+        var interval = TimeSpan.FromMilliseconds(
+            _watchingPopups ? Math.Min(_pollIntervalMs, PopupWatchIntervalMs) : _pollIntervalMs);
         try
         {
             token.WaitHandle.WaitOne(interval);
@@ -456,6 +508,8 @@ internal sealed class ComposerDockTracker : IDisposable
 
     private void Publish(ComposerDockSnapshot snapshot)
     {
+        // Every publish carries the current menu state, whichever path produced the geometry.
+        snapshot = snapshot with { PopupOpen = _popupOpen && snapshot.WindowHandle != 0 };
         if (snapshot == _latest)
         {
             return;
@@ -475,8 +529,10 @@ internal sealed class ComposerDockTracker : IDisposable
         IntPtr hwnd,
         ref AutomationElement? composer,
         ref AutomationElement? reference,
-        ref AutomationElement? model)
+        ref AutomationElement? model,
+        List<AutomationElement>? expandable = null)
     {
+        expandable?.Clear();
         var root = AutomationElement.FromHandle(hwnd);
         if (root is null)
         {
@@ -542,6 +598,14 @@ internal sealed class ComposerDockTracker : IDisposable
 
             childElement = TryNextSibling(walker, childElement);
             index++;
+        }
+
+        if (expandable is not null)
+        {
+            foreach (var candidate in children)
+            {
+                CollectExpandableButtons(candidate.Element, walker, expandable);
+            }
         }
 
         var contextIndex = -1;
@@ -812,6 +876,47 @@ internal sealed class ComposerDockTracker : IDisposable
         }
 
         return false;
+    }
+
+    /// <summary>Every menu-opening button in one composer child: the child itself and one level down.</summary>
+    private static void CollectExpandableButtons(AutomationElement element, TreeWalker walker, List<AutomationElement> into)
+    {
+        if (into.Count >= 16) return;
+        if (TryControlType(element) == "Button" && IsExpandable(element))
+        {
+            into.Add(element);
+            return;
+        }
+
+        var child = TryFirstChild(walker, element);
+        var guard = 0;
+        while (child is not null && guard < 12 && into.Count < 16)
+        {
+            if (string.Equals(TryControlType(child), "Button", StringComparison.Ordinal) && IsExpandable(child))
+            {
+                into.Add(child);
+            }
+
+            child = TryNextSibling(walker, child);
+            guard++;
+        }
+    }
+
+    /// <summary>Null when the element can no longer answer (replaced or gone); never throws.</summary>
+    private static bool? TryIsExpanded(AutomationElement element)
+    {
+        try
+        {
+            return element.GetCurrentPropertyValue(ExpandCollapsePattern.ExpandCollapseStateProperty, true)
+                is ExpandCollapseState state
+                    ? state is ExpandCollapseState.Expanded or ExpandCollapseState.PartiallyExpanded
+                    : null;
+        }
+        catch (Exception exception) when (exception is ElementNotAvailableException or InvalidOperationException
+            or System.Runtime.InteropServices.COMException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     private static bool IsExpandable(AutomationElement element)

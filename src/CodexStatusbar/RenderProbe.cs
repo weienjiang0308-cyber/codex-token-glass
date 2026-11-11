@@ -68,6 +68,11 @@ internal static class RenderProbe
         }
 
         cases.Add(RenderWaitingCase(outputDirectory, 144));
+        // The real waiting sentences, in both scripts: the strip must be sized for the sentence it
+        // draws, so none of these may reach the surface edge (the signature of an ellipsis).
+        cases.Add(RenderWaitingCase(outputDirectory, 144, "waiting-status-zh-144dpi", "新对话，等待 token 数据…"));
+        cases.Add(RenderWaitingCase(outputDirectory, 96, "waiting-status-zh-96dpi", "正在寻找当前 Codex 会话…"));
+        cases.Add(RenderWaitingCase(outputDirectory, 144, "waiting-status-en-144dpi", "New chat, waiting for token data…"));
         cases.Add(RenderNeutralTextCase(outputDirectory));
         var halo = MeasureKeyColourHalo(outputDirectory, 144);
         var layeredHalo = MeasureLayeredAlpha(cases);
@@ -168,33 +173,33 @@ internal static class RenderProbe
             TextClipped: TextClipped(stats, size, transparent && !editMode));
     }
 
-    private static RenderProbeCaseResult RenderWaitingCase(string outputDirectory, uint dpi)
+    private static RenderProbeCaseResult RenderWaitingCase(string outputDirectory, uint dpi,
+        string name = "waiting-transparent-dark-144dpi", string status = "")
     {
-        const string name = "waiting-transparent-dark-144dpi";
         using var form = new TokenStripForm();
         form.SetTransparentBackground(true);
         form.ApplyTheme(OverlayThemePalette.For(OverlayThemeKind.Dark));
         form.SetPresentation(OverlayPresentationBuilder.CreateWaiting(
-            string.Empty,
+            status,
             DisplayField.Tps,
             DisplayField.Total,
             DisplayFieldRules.PrimaryStripMask));
-        var layout = CalculateLayout(form, 144, new IntRect(0, 0, 2560, 1400));
+        var layout = CalculateLayout(form, dpi, new IntRect(0, 0, 2560, 1400));
         form.ApplyLayout(layout);
         var size = new Size(layout.WindowBounds.Width, layout.WindowBounds.Height);
-        using var surface = form.RenderSurfaceBitmap(size, 144);
+        using var surface = form.RenderSurfaceBitmap(size, dpi);
         surface.Save(Path.Combine(outputDirectory, name + ".png"), ImageFormat.Png);
         SaveComposite(surface, Path.Combine(outputDirectory, name + "-over-light.png"), Color.FromArgb(246, 246, 248));
         var stats = Measure(surface);
         return new RenderProbeCaseResult(
             Name: name,
             Theme: "dark",
-            Dpi: 144,
+            Dpi: dpi,
             Colours: "text only",
             Mode: "locked",
             Width: size.Width,
             Height: size.Height,
-            TextWidthDip: Math.Round(MeasureCapsuleTextWidth(form, 144), 2),
+            TextWidthDip: Math.Round(MeasureCapsuleTextWidth(form, dpi), 2),
             PixelCount: stats.PixelCount,
             TransparentPixels: stats.TransparentPixels,
             SemiTransparentPixels: stats.SemiTransparentPixels,

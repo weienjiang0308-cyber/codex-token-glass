@@ -34,7 +34,13 @@ internal sealed class UsageStatisticsService : IDisposable
         {
             while (!_stop.IsCancellationRequested)
             {
-                await RefreshAsync(_stop.Token);
+                // One failed pass (bad cache file, unexpected record, price page) must not end
+                // statistics for the rest of the process; the next pass simply tries again.
+                try { await RefreshAsync(_stop.Token); }
+                catch (Exception ex) when (ex is not OperationCanceledException || !_stop.IsCancellationRequested)
+                {
+                    if (Current is { } last) Current = last with { Error = "统计刷新失败（" + ex.GetType().Name + "）；稍后重试" };
+                }
                 await Task.Delay(TimeSpan.FromSeconds(10), _stop.Token);
             }
         }

@@ -1,0 +1,59 @@
+glass.23：DeepSeek Harness 口径与快速恢复
+日期：2026-11-06
+
+本轮最终需求
+采用 DeepSeek Harness 的完成响应吞吐，取消底栏 Last 和原先的可见文本短窗估算。
+保留 token 用量、缓存率，Ready / Working / Output 等状态放在右侧。
+
+核对依据
+本机 DeepSeek Harness 0.2.1-rc.5 的 app.asar 内：
+  @deepseek-ai/dsh-session-stats/lib/types/projection.js
+  @earendil-works/pi-ai/dist/api/openai-codex-responses.js
+  @earendil-works/pi-ai/dist/api/openai-responses-shared.js
+本机 dsh-codex 0.3.2：src/adapter.ts、src/responses.ts。
+实际 Codex 路由使用 dsh-codex；dsh-plugin-subscriptions 0.9.12 的配置仅启用 Claude。
+没有读取登录凭据，也没有修改 Harness 或 Codex 账号/模型配置。
+
+数据流与公式
+Harness 插件是请求客户端，直接接收 SSE / WebSocket 响应流。
+服务端完成事件中的 usage.output_tokens 进入 Harness 输出计数。
+Harness 在 assistant/message 完成时累计 decodeTokens 与 decodeMs，速度是总量之比。
+本程序：同一会话已完成且可计时响应的 output_tokens 总和 / 对应响应时长总和。
+包含官方报告的推理与工具参数；工具执行、用户等待和首输出之前的时间不加入响应时段。
+记录没有可匹配的开始时间时，token 与时长同时排除；详情显示计时覆盖数。
+不把每个网络包当作一个 token，不按字符估算，不取响应速度的简单算术平均。
+
+必须保留的边界
+Codex 外挂未接管桌面端网络请求：计时起点来自 Reasoning/AgentMessage 的 started_at_ms，终点来自完成用量记录时间。
+这些本地字段不能保证逐项等同于原始首 token 网络到达时间；因此只能声称采用相同公式和官方计数，不能声称服务端解码速度或与 Harness 完全一致。
+一次响应可能持续几十秒甚至更久。此时保留上一读数、更新工作状态，不伪装成每秒产生新测量。
+实时考察 12 秒本机 IPC 时，收到初始化、订阅与 thread-stream-state-changed，未观察到原始 response.completed/SSE 事件；这不等于证明所有版本都不支持其他事件。
+
+本轮发现并使用的新数据
+IPC conversationState.latestTokenUsageInfo.total 提供 inputTokens、outputTokens、cachedInputTokens、reasoningOutputTokens、totalTokens。
+旧代码忽略这个根级字段。本轮支持快照、整对象与嵌套补丁，按 revision 验证顺序；缺口时失效重订阅，断线不使用旧计数。
+只有完整、一致且不落后于已读日志的累计用量才能替代日志值，避免迟到快照把数值拖回去。
+IPC 计数更新本身不能作速度分母：两条用量更新之间可能有工具执行和空闲。
+
+性能与布局
+识别窗口标题时注册 UIA NameProperty 事件，同时保留 150ms 轮询回退。
+界面每 50ms 检查路由，后台数据轮询限流至最多每 100ms 一次。
+按数据库 rollout_path 直接定位文件，缓存 8 个最近读取器。
+新会话先交付数据库/IPC 用量，完整历史速度在后台恢复，再增量读取；缓存最多 16 个速度文件。
+界面直接消费完成的后台结果，不再额外等 350ms 生命周期定时器。
+生产 IPC 路径禁用可见文本 tokenizer，避免对增长中的全文反复分词。
+布局参考 Harness 的 12 DIP 字体、14 DIP 线条图标、紧凑横排和数字预留宽度。
+浅色与深色维持既有主题；状态独立置右，底栏无 Last。
+
+验证
+840 项测速/统计检查通过，包含跨轮次加权、缺计时双边排除、工具间隔排除、IPC 快照/嵌套补丁/修订缺口，以及 32 MiB 大日志后台恢复。
+432 项应用自检、5 项隔离路由检查通过。
+20 个生产绘制场景（含浅深色、多个 DPI）无裁边报告；已目视核对浅深色绘制。
+32 MiB 合成日志一次测试：首次后台调用返回约 0.85ms，完整恢复约 53ms。
+本机一次可见会话探针：约 278ms 识别并出现已知用量，约 839ms 出现历史吞吐。
+以上不是普遍延迟承诺，也不是“无 bug”证明。未进行所有跨窗口/重名/网络条件的端到端穷举。
+
+参考
+https://github.com/deepseek-ai/deepseek-harness
+https://github.com/Yan-Zero/dsh-codex
+https://learn.chatgpt.com/docs/app-server

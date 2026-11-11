@@ -190,7 +190,15 @@ internal sealed class TokenStripForm : Form
     /// Regular at 13 DIP gives 170 px of ink against the 172 px measured on screen; Segoe UI Variable
     /// gives 167 and Segoe UI Semibold 182, so Regular is the match.
     /// </summary>
-    private static string StripFontFamily => CodexUi.FontName;
+    private ComposerTypeface _typeface = ComposerTypeface.Resolve(null, null);
+    private string StripFontFamily => _typeface.Family;
+    internal void SetComposerTypeface(ComposerTypeface? typeface)
+    {
+        var next = typeface ?? ComposerTypeface.Resolve(null, null);
+        if (next == _typeface) return;
+        _typeface = next; _measuredWidths = null; _presentationVersion++;
+        InvalidateSurface();
+    }
 
     public bool ClickToExpand { get; }
 
@@ -365,7 +373,8 @@ internal sealed class TokenStripForm : Form
     private int EffectiveScalePercent =>
         CurrentLayout?.ScalePercent ?? ManualAttachmentRules.DefaultScalePercent;
 
-    private static Font CreateStripFont(float points) => CodexUi.Font(points);
+    private Font CreateStripFont(float points) => new(_typeface.Family,
+        (float)(points * _typeface.Points / 9.75), FontStyle.Regular, GraphicsUnit.Point);
 
     internal int SetBoundsCoreCallCount { get; private set; }
     internal bool IsEditGestureActive => _editGesture is not null;
@@ -1313,20 +1322,6 @@ internal sealed class TokenStripForm : Form
 
         var padding = metrics.HorizontalPadding;
         var content = Rectangle.Inflate(bounds, -padding, 0);
-        if (!string.IsNullOrWhiteSpace(_presentation.StatusText))
-        {
-            DrawAlignedText(
-                graphics,
-                _presentation.StatusText,
-                labelFont,
-                content,
-                _palette.Label,
-                TextAlignment.Center,
-                shadow);
-            DrawEditHandle(graphics, editPen, metrics, decorations);
-            return;
-        }
-
         // The collapsed strip is one pre-composed line:
         //     ⚡ 243 tok/s · 5.7M tok · Cache 98%
         // All three primary metrics are visible without any click. It is drawn as a single string at
@@ -1436,9 +1431,11 @@ internal sealed class TokenStripForm : Form
         OverlayRenderMetrics metrics, OverlayRenderDecorationState decorations)
     {
         var layout=CurrentLayout!;
-        using var panelLabelFont=CodexUi.Font(11f*layout.ScalePercent/100f);
-        using var panelValueFont=CodexUi.Font(11.5f*layout.ScalePercent/100f);
-        using var panelButtonFont=CodexUi.Font(11.5f*layout.ScalePercent/100f,semibold:true);
+        using var panelLabelFont=new Font(_typeface.Family,10.5f*layout.ScalePercent/100f);
+        using var panelValueFont=new Font(_typeface.Family,10.5f*layout.ScalePercent/100f);
+        using var panelButtonFont=new Font(_typeface.Family,10f*layout.ScalePercent/100f);
+        using var panelHeaderFont=new Font(_typeface.Family,15f*layout.ScalePercent/100f,FontStyle.Bold);
+        headerFont=panelHeaderFont;
         labelFont=panelLabelFont;valueFont=panelValueFont;
         var bounds=layout.PanelBounds.ToRectangle();
         var unit=layout.Dpi/96d*layout.ScalePercent/100d;
@@ -1451,8 +1448,8 @@ internal sealed class TokenStripForm : Form
         }
         var left=bounds.Left+D(24);var width=bounds.Width-D(48);
         DrawAlignedText(graphics,string.IsNullOrWhiteSpace(_presentation.ConversationTitle) ? CodexUi.T("Codex 用量","Codex usage") : _presentation.ConversationTitle,headerFont,
-            new Rectangle(left,bounds.Top+D(16),width-D(140),D(32)),_palette.Value,TextAlignment.Near,false);
-        DrawAlignedText(graphics,_presentation.SpeedExplanation ?? CodexUi.T("此对话 · 用量与性能","This conversation · usage & performance"),labelFont,
+            new Rectangle(left,bounds.Top+D(16),width-D(112),D(32)),_palette.Value,TextAlignment.Near,false);
+        DrawAlignedText(graphics,CodexUi.T("本对话概览 · 响应完成后更新","Conversation · completed responses"),labelFont,
             new Rectangle(left,bounds.Top+D(52),width,D(24)),_palette.Label,TextAlignment.Near,false);
         DrawSettingsGlyph(graphics,SettingsButtonBounds);
         if (!_liquidFrame)
@@ -1469,27 +1466,13 @@ internal sealed class TokenStripForm : Form
         DrawHero(graphics,_presentation.Primary,new Rectangle(left,bounds.Top+D(82),heroWidth,D(66)),labelFont,layout.ScalePercent);
         DrawHero(graphics,_presentation.Secondary,new Rectangle(left+heroWidth+D(20),bounds.Top+D(82),heroWidth,D(66)),labelFont,layout.ScalePercent);
 
-        var chipTop=bounds.Top+D(157);var chipWidth=(width-D(10))/2;
-        void Chip(DisplayField field,string chinese,string english,int x)
-        {
-            var metric=_presentation.ExpandedRows.FirstOrDefault(r=>r.Field==field);if(metric is null)return;
-            var r=new Rectangle(x,chipTop,chipWidth,D(28));
-            using var p=CreateRoundedRectanglePath(r,D(10));
-            using var fill=new SolidBrush(Color.FromArgb(115,_palette.Background));graphics.FillPath(fill,p);
-            var caption=CodexUi.T(chinese,english);
-            var captionWidth=MeasureWidth(graphics,caption,labelFont);
-            var valueLeft=r.Left+D(10)+captionWidth+D(8);
-            DrawAlignedText(graphics,caption,labelFont,
-                new Rectangle(r.Left+D(10),r.Top,captionWidth,r.Height),_palette.Label,TextAlignment.Near,false);
-            DrawAlignedText(graphics,metric.Value,valueFont,
-                new Rectangle(valueLeft,r.Top,Math.Max(0,r.Right-D(10)-valueLeft),r.Height),_palette.Value,TextAlignment.Far,false);
-        }
-        Chip(DisplayField.PeakSpeed,"峰值","Peak",left);
-        Chip(DisplayField.Tps,_presentation.LiveReadingHeld?"上次文本":"实时估算",
-            _presentation.LiveReadingHeld?"Last text":"Live est.",left+chipWidth+D(10));
-
-        var rows=_presentation.ExpandedRows.Where(r=>r.Field is not DisplayField.PeakSpeed and not DisplayField.AverageSpeed and not DisplayField.Tps).ToList();
-        if(_presentation.Secondary.Field==DisplayField.Total && rows.All(r=>r.Field!=DisplayField.Total))rows.Insert(0,_presentation.Secondary);
+        var peak=_presentation.ExpandedRows.FirstOrDefault(r=>r.Field==DisplayField.PeakSpeed);
+        var meta = peak is null ? "" : CodexUi.T("峰值 ","Peak ") + peak.Value;
+        if (_presentation.TimingCoverage is { } coverage)
+            meta += (meta.Length > 0 ? "   ·   " : "") + CodexUi.T("已计时 ","Timed ") + coverage;
+        DrawAlignedText(graphics,meta,labelFont,new Rectangle(left,bounds.Top+D(164),width,D(24)),
+            _palette.Label,TextAlignment.Near,false);
+        var rows=_presentation.DetailRows.ToList();
         int Group(OverlayMetric r)=>r.Field switch
         {
             DisplayField.Context or DisplayField.ContextPercent=>1,
@@ -1498,7 +1481,7 @@ internal sealed class TokenStripForm : Form
         };
         var breaks=rows.Skip(1).Select((r,i)=>Group(r)!=Group(rows[i])).Count(x=>x);
         var rowHeight=layout.ExpandedRowHeight;var gap=D(12);
-        var top=bounds.Bottom-D(12)-rows.Count*rowHeight-breaks*gap;
+        var top=bounds.Top+D(208);
         var plate=new Rectangle(bounds.Left+D(12),top-D(4),bounds.Width-D(24),bounds.Bottom-D(12)-top+D(4));
         using(var shape=CreateRoundedRectanglePath(plate,Math.Max(0,metrics.PanelRadius-D(12))))
         using(var fill=new SolidBrush(Color.FromArgb(GlassAppearance.ReadingPlateAlpha(CodexUi.GlassTransparency),_palette.Background)))graphics.FillPath(fill,shape);
@@ -1525,8 +1508,8 @@ internal sealed class TokenStripForm : Form
         if(metric.Field==DisplayField.Total && long.TryParse(text,NumberStyles.Number,CultureInfo.InvariantCulture,out var number))
             text=MetricFormat.CompactTokens(number);
         else if(text.EndsWith(" tok/s",StringComparison.Ordinal)){text=text[..^6];unit="tok/s";}
-        using var numberFont=CodexUi.Font((text.Length>7?22:28)*scale/100f,semibold:true);
-        var heroLabel = metric.Field == DisplayField.Tps ? CodexUi.T("可见文本速度", "Visible-text speed") : metric.ExpandedLabel;
+        using var numberFont=new Font(_typeface.Family,(text.Length>7?22:26)*scale/100f,FontStyle.Bold);
+        var heroLabel = metric.Field == DisplayField.Tps ? CodexUi.T("输出速度", "Throughput") : metric.ExpandedLabel;
         DrawAlignedText(g,heroLabel,label,new Rectangle(bounds.Left,bounds.Top,bounds.Width,D(20)),
             CodexUi.Mix(_palette.Background,_palette.Value,.85),TextAlignment.Near,false);
         var valueRect=new Rectangle(bounds.Left,bounds.Top+D(20),bounds.Width,D(46));
@@ -1547,7 +1530,7 @@ internal sealed class TokenStripForm : Form
         {
             var gear = SettingsButtonBounds;
             if (gear.IsEmpty) return Rectangle.Empty;
-            var width = (int)Math.Round(gear.Width * 1.75);
+            var width = (int)Math.Round(gear.Width * 1.65);
             var gap = (int)Math.Round(gear.Width / 6d);
             return new Rectangle(gear.Left - width - gap, gear.Top + (int)Math.Round(gear.Height / 24d), width, (int)Math.Round(gear.Height * 22d / 24d));
         }
@@ -1557,7 +1540,8 @@ internal sealed class TokenStripForm : Form
         if(layout.PanelBounds.IsEmpty)return Rectangle.Empty;
         var unit=layout.Dpi/96d*layout.ScalePercent/100d;
         // Outer radius 32, button radius 26: keep their centers concentric.
-        var side=(int)Math.Round(52*unit);var inset=(int)Math.Round(6*unit);
+        // The settings window's close button uses this same 32 DIP size.
+        var side=(int)Math.Round(32*unit);var inset=(int)Math.Round(16*unit);
         var panel=layout.PanelBounds;
         return new Rectangle(panel.Right-inset-side,panel.Top+inset,side,side);
     }
@@ -1576,7 +1560,7 @@ internal sealed class TokenStripForm : Form
             using var line=new Pen(Color.FromArgb(_settingsHovered?65:40,_palette.Value),.85f);
             graphics.DrawEllipse(line,circle);
         }
-        var size=(int)Math.Round(bounds.Width/2d);
+        var size=(int)Math.Round(bounds.Width*.6d);
         var rasterSize = size * 4;
         if(_settingsIcon is null || _settingsIcon.Width!=rasterSize || _settingsIconColor!=_palette.Value)
         {
@@ -1759,7 +1743,7 @@ internal sealed class TokenStripForm : Form
     /// ascent/descent midpoints, because <c>LineAlignment.Center</c> centres whichever line box it
     /// is given and a smaller box therefore lands its baseline slightly higher.</para>
     /// </summary>
-    private static void DrawStripLine(
+    private void DrawStripLine(
         Graphics graphics,
         string text,
         Font textFont,
@@ -1772,7 +1756,26 @@ internal sealed class TokenStripForm : Form
         var (icon, body) = SplitLeadingIcon(text);
         if (icon.Length == 0)
         {
-            DrawAlignedText(graphics, text, textFont, bounds, color, TextAlignment.Center, shadow, metrics);
+            // Match the Harness composer: quiet labels, 14 DIP outline icons, 6 DIP
+            // gaps and stable numeric slots. Activity is a peer, never a speed prefix.
+            var scale = (float)(EmPixels(textFont, graphics) / 12d);
+            var gap = 7f * scale;
+            var pieces = text.Split(" · ", StringSplitOptions.None);
+            var widths = pieces.Select(p => StripPartWidth(graphics, p, textFont)).ToArray();
+            float x = bounds.Left + (bounds.Width - (float)widths.Sum() - gap * (pieces.Length - 1)) / 2f;
+            for (var i = 0; i < pieces.Length; i++)
+            {
+                var part = pieces[i];
+                var hasIcon = part.EndsWith("tok/s", StringComparison.Ordinal) || part.EndsWith("t/s", StringComparison.Ordinal)
+                    || part.StartsWith("Tokens ", StringComparison.Ordinal);
+                var inset = hasIcon ? 20f * scale : 0;
+                if (hasIcon) DrawMetricIcon(graphics, part.StartsWith("Tokens ", StringComparison.Ordinal),
+                    x, bounds.Top + (bounds.Height - 14f * scale) / 2, scale, _palette.Label);
+                DrawAlignedText(graphics, part, textFont,
+                    new Rectangle((int)Math.Round(x + inset), bounds.Top, (int)Math.Ceiling(widths[i] - inset), bounds.Height),
+                    _palette.Label, TextAlignment.Near, shadow, metrics);
+                x += (float)widths[i] + gap;
+            }
             return;
         }
 
@@ -1835,12 +1838,48 @@ internal sealed class TokenStripForm : Form
         using var format = CreateFormat(TextAlignment.Near);
         if (icon.Length == 0)
         {
-            return AppleText.Measure(graphics,text,textFont) ?? graphics.MeasureString(text, textFont, new SizeF(8192f, 512f), format).Width;
+            var parts = text.Split(" · ", StringSplitOptions.None);
+            return parts.Sum(p => StripPartWidth(graphics, p, textFont))
+                + Math.Max(0, parts.Length - 1) * EmPixels(textFont, graphics) * 7d / 12d;
         }
 
         return graphics.MeasureString(icon, iconFont, new SizeF(512f, 512f), format).Width
             + MeasureSpaceAdvance(graphics, textFont)
             + graphics.MeasureString(body, textFont, new SizeF(8192f, 512f), format).Width;
+    }
+
+    private static double StripPartWidth(Graphics graphics, string part, Font font)
+    {
+        using var format = CreateFormat(TextAlignment.Near);
+        // DrawAlignedText swaps in the CJK face for CJK text; measure with that same face or the
+        // slot comes out narrower than the glyphs and the text is trimmed.
+        using var localized = part.Any(c => c is >= '⺀' and <= '鿿')
+            ? CodexUi.FontForText(part, font.Size, CodexUi.IsEmphasized(font)) : null;
+        var measured = localized ?? font;
+        double Width(string value) => Math.Ceiling(graphics.MeasureString(value, measured, new SizeF(8192, 512), format).Width) + (localized is null ? 0 : 1);
+        var speed = part.EndsWith("tok/s", StringComparison.Ordinal) || part.EndsWith("t/s", StringComparison.Ordinal);
+        var tokens = part.StartsWith("Tokens ", StringComparison.Ordinal);
+        // Use actual content widths so each visible group has the same gap.
+        // Reserving different hidden padding per field made short states look uneven.
+        return Width(part) + (speed || tokens ? 20d * EmPixels(font, graphics) / 12d : 0);
+    }
+
+    private static void DrawMetricIcon(Graphics graphics, bool database, float x, float y, float scale, Color color)
+    {
+        using var pen = new Pen(color, Math.Max(1f, 1.2f * scale));
+        if (database)
+        {
+            graphics.DrawEllipse(pen, x + 2 * scale, y + 2 * scale, 10 * scale, 3 * scale);
+            graphics.DrawLine(pen, x + 2 * scale, y + 3.5f * scale, x + 2 * scale, y + 11 * scale);
+            graphics.DrawLine(pen, x + 12 * scale, y + 3.5f * scale, x + 12 * scale, y + 11 * scale);
+            graphics.DrawArc(pen, x + 2 * scale, y + 6 * scale, 10 * scale, 3 * scale, 0, 180);
+            graphics.DrawArc(pen, x + 2 * scale, y + 9 * scale, 10 * scale, 3 * scale, 0, 180);
+        }
+        else
+        {
+            graphics.DrawArc(pen, x + scale, y + 2 * scale, 12 * scale, 12 * scale, 150, 240);
+            graphics.DrawLine(pen, x + 7 * scale, y + 8 * scale, x + 10 * scale, y + 4 * scale);
+        }
     }
 
     /// <summary>

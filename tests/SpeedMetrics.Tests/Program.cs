@@ -4,6 +4,20 @@ using Codex.SpeedMetrics;
 HostTokenizer.Initialize();
 int checks = 0;
 void Check(bool ok, string name) { checks++; if (!ok) throw new Exception("FAIL: " + name); Console.WriteLine("PASS " + name); }
+
+using (var fixtures = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"fixtures","harness-throughput-0.2.1-rc.5.json"))))
+foreach (var fixture in fixtures.RootElement.EnumerateArray())
+{
+    var projection = new HarnessThroughputProjection();
+    foreach (var e in fixture.GetProperty("events").EnumerateArray()) projection.Observe(e);
+    var expected = fixture.GetProperty("expected"); var name = fixture.GetProperty("name").GetString();
+    Check(projection.DecodeTokens == expected.GetProperty("tokens").GetDouble() && projection.DecodeMilliseconds == expected.GetProperty("ms").GetDouble(), "Harness native golden tokens/time: " + name);
+    Check(expected.GetProperty("tps").ValueKind == JsonValueKind.Null ? projection.Tps is null
+        : projection.Tps is double value && Math.Abs(value-expected.GetProperty("tps").GetDouble())<1e-8, "Harness native golden throughput: " + name);
+    Check(projection.LlmMilliseconds == expected.GetProperty("llmMs").GetDouble() && projection.TtftMilliseconds == expected.GetProperty("ttftMs").GetDouble()
+        && projection.TtftSteps == expected.GetProperty("ttftSteps").GetInt32(), "Harness native golden timing boundaries: " + name);
+}
+
 string Row(string record, object payload, long at = 0) => JsonSerializer.Serialize(new {
     type = record, timestamp = DateTimeOffset.FromUnixTimeMilliseconds(at).ToString("O"), payload });
 void Begin(ResponseSpeedAnalyzer a, string turn = "turn-1", long at = 0) =>
@@ -31,6 +45,33 @@ var overlap = new ResponseSpeedAnalyzer(); Begin(overlap); Item(overlap, 1000, 1
 Check(overlap.AverageTps == 100, "overlapping output items do not add durations twice");
 var invalid = new ResponseSpeedAnalyzer(); Begin(invalid); Item(invalid, 2000, 1000); Usage(invalid, 1500, 100);
 Check(invalid.AverageTps is null, "invalid timestamps do not produce speed");
+
+var zeroOutput = new ResponseSpeedAnalyzer(); Begin(zeroOutput); Item(zeroOutput,1000,1100); Usage(zeroOutput,2000,100,"z1");
+Item(zeroOutput,3000,3100); Usage(zeroOutput,4000,0,"z2");
+Check(zeroOutput.SessionTimedTokens==100 && zeroOutput.SessionTimedMilliseconds==2000 && zeroOutput.SessionTimedResponses==2,
+    "zero-output completed response retains its generation time like Harness");
+var staleTurn = new ResponseSpeedAnalyzer(); Begin(staleTurn,"old",0); Begin(staleTurn,"new",1000);
+staleTurn.ObserveLine(Row("event_msg",new{type="item_completed",turn_id="old",item=new{type="Reasoning"},started_at_ms=1500,completed_at_ms=1600},1600));
+Usage(staleTurn,2000,100,"stale-response","new");
+Check(staleTurn.SessionTimedResponses==0,"late item from another turn cannot establish this response's start");
+new ResponseSpeedAnalyzer().ObserveLine("{\"type\":\"token_usage_record\",\"payload\":\"bad\"}");
+new ResponseSpeedAnalyzer().ObserveLine("null");
+Check(true,"malformed record shapes do not stop the incremental parser");
+var rewrittenLog=Path.Combine(Path.GetTempPath(),"speed-rewrite-"+Guid.NewGuid().ToString("N")+".jsonl");
+try
+{
+    var prefix=Row("event_msg",new{type="task_started",turn_id="turn-1"})+"\n"
+        +Row("event_msg",new{type="item_completed",item=new{type="Reasoning"},started_at_ms=1000,completed_at_ms=1100},1100)+"\n";
+    string Record(int n)=>Row("token_usage_record",new{response_id="same",turn_id="turn-1",usage=new{output_tokens=n}},2000)+"\n";
+    File.WriteAllText(rewrittenLog,prefix+Record(100));using var observed=new SpeedObserver(false);observed.Read("rewrite",rewrittenLog);
+    File.WriteAllText(rewrittenLog,prefix+Record(900));File.SetLastWriteTimeUtc(rewrittenLog,DateTime.UtcNow.AddSeconds(2));
+    Check(observed.Read("rewrite",rewrittenLog).TimedOutputTokens==900,"same-length rewrite invalidates cached usage");
+    File.WriteAllText(rewrittenLog,prefix+Row("event_msg",new{type="token_count",info=new{last_token_usage=new{output_tokens=100},total_token_usage=new{output_tokens=100}}},2000)+"\n"
+        +Record(100)+"{\"type\":\"response_item\",\"payload\":\""+new string('x',9*1024*1024)+"\"}\n");
+    using var mixedCarrier=new SpeedObserver(false);
+    Check(mixedCarrier.Read("mixed",rewrittenLog).CompletedResponses==1,"modern usage before a large tool tail suppresses legacy mirrors");
+}
+finally{File.Delete(rewrittenLog);}
 
 const string text = "Hello, tokenizer! 你好，世界。A token is not a packet. 🚀 streaming text changes BPE boundaries.";
 var whole = new VisibleTextWindow(); whole.Observe("m", text, 1000);
@@ -93,6 +134,27 @@ finally { Directory.Delete(testRoot, true); }
 var heldDisplay = new LiveSpeedDisplay();
 var reading = new SpeedReading("chat-a", "turn-a", true, 40, 100, 2500, 1, 1, 40, 100, 2500, 40,
     60, true, 1000, false);
+var throughputDisplay = new ResponseSpeedDisplay();
+var firstResponse = reading with { TimedOutputTokens = 100, TimedMilliseconds = 500, LiveEstimateTps = 2.25 };
+Check(throughputDisplay.Read(firstResponse).Rate == 200, "Harness throughput uses provider tokens and response time, never the visible-text estimate");
+var weightedResponses = firstResponse with { TimedOutputTokens = 1000, TimedMilliseconds = 9500 };
+Check(Math.Abs(throughputDisplay.Read(weightedResponses).Rate!.Value - 1000 / 9.5) < .00001,
+    "completed-response throughput weights duration, not the arithmetic mean of 200 and 100");
+Check(throughputDisplay.Read(weightedResponses with { Activity = "command" }).Rate == throughputDisplay.Read(weightedResponses).Rate,
+    "tool execution cannot decay completed-response throughput");
+Check(throughputDisplay.Read(firstResponse with { ThreadId = "other", TimedOutputTokens = 0, TimedMilliseconds = 0 }).Rate is null,
+    "unknown chat never inherits another chat's throughput");
+Check(new ResponseSpeedDisplay().Read(reading with { TimedMilliseconds = 0 }).Rate is null,
+    "missing timing never invents a rate from usage or live estimates");
+var sessionSpeed = new ResponseSpeedAnalyzer();
+Begin(sessionSpeed, "first", 0); Item(sessionSpeed, 1000, 1200); Usage(sessionSpeed, 1500, 100, "first-response", "first");
+Begin(sessionSpeed, "second", 60000); Item(sessionSpeed, 70000, 71000); Usage(sessionSpeed, 79000, 900, "second-response", "second");
+Check(sessionSpeed.SessionTimedTokens == 1000 && sessionSpeed.SessionTimedMilliseconds == 9500,
+    "session throughput spans turns but excludes idle, tool and pre-output waiting intervals");
+Usage(sessionSpeed, 80000, 500, "untimed", "second");
+Check(sessionSpeed.SessionTimedTokens == 1000 && sessionSpeed.SessionTimedMilliseconds == 9500
+    && sessionSpeed.SessionCompletedResponses == 3 && sessionSpeed.SessionTimedResponses == 2,
+    "untimed response is excluded from BOTH sides of the ratio and recorded in coverage");
 Check(heldDisplay.Read(reading, 1000) == (60d, false), "new streamed text updates the displayed live rate");
 Check(heldDisplay.Read(reading with { LiveEstimateTps = 30 }, 1700).Rate == 60,
     "window decay without new text does not drag the last active rate downward");
@@ -143,6 +205,32 @@ try
         "restart includes the whole current turn even after more than 8 MB of tool output");
 }
 finally{File.Delete(longLog);}
+
+var backgroundLog = Path.Combine(Path.GetTempPath(), "codex-background-throughput-" + Guid.NewGuid().ToString("N") + ".jsonl");
+try
+{
+    File.WriteAllText(backgroundLog,
+        Row("event_msg", new { type = "task_started", turn_id = "one" }, 0) + "\n"
+        + Row("event_msg", new { type = "item_completed", item = new { type = "Reasoning" }, started_at_ms = 1000, completed_at_ms = 1200 }, 1200) + "\n"
+        + Row("token_usage_record", new { response_id = "one", turn_id = "one", usage = new { output_tokens = 100 } }, 1500) + "\n"
+        + "{\"type\":\"response_item\",\"payload\":\"" + new string('x', 32 * 1024 * 1024) + "\"}\n"
+        + Row("event_msg", new { type = "task_started", turn_id = "two" }, 60000) + "\n"
+        + Row("event_msg", new { type = "item_completed", item = new { type = "Reasoning" }, started_at_ms = 70000, completed_at_ms = 71000 }, 71000) + "\n"
+        + Row("token_usage_record", new { response_id = "two", turn_id = "two", usage = new { output_tokens = 900 } }, 79000) + "\n");
+    using var background = new SpeedObserver(); // No Watch: exercises background history without connecting IPC.
+    var timer = System.Diagnostics.Stopwatch.StartNew();
+    var pending = background.Read("synthetic", backgroundLog);
+    var firstReadMs = timer.Elapsed.TotalMilliseconds;
+    while (pending.CompletedResponses < 2 && timer.Elapsed < TimeSpan.FromSeconds(10))
+    { Thread.Sleep(10); pending = background.Read("synthetic", backgroundLog); }
+    Check(pending.TimedOutputTokens == 1000 && pending.TimedMilliseconds == 9500 && pending.CompletedResponses == 2,
+        "background full-session restore includes both turns across a 32 MiB tool result");
+    Console.WriteLine($"BENCH background 32 MiB first read {firstReadMs:F2} ms; complete {timer.Elapsed.TotalMilliseconds:F2} ms");
+    var retained = new ResponseSpeedDisplay().Read(pending).Rate;
+    Check(retained.HasValue && Math.Abs(retained.Value - 1000 / 9.5) < .00001,
+        "background restore publishes the same weighted throughput as the Harness definition");
+}
+finally { File.Delete(backgroundLog); }
 
 // Conservation checks use unheld one-second display samples, including the filter tail.
 void IntegralCase(string label, List<(long At, string Id, string Text)> events, int expected)
@@ -226,6 +314,20 @@ using (var replay = new CodexLiveStream())
     Feed(threadB,new {type="patches",revision=11,baseRevision=10,patches=new[]{new {op="replace",path=new object[]{"turns",0,"items",0,"status"},value="completed"}}});
     Check(!replay.Read(threadB).ToolRunning,"tool completion patches clear the hold phase");
 
+    // Direct official IPC counters must be consumed, independently of text estimates.
+    object UsageSnapshot(int revision, long input, long output) => new { type = "snapshot", revision,
+        conversationState = new { latestTokenUsageInfo = new { total = new { inputTokens = input, outputTokens = output,
+            cachedInputTokens = input / 2, reasoningOutputTokens = output / 2, totalTokens = input + output } }, turns = Array.Empty<object>() } };
+    Feed(threadB, UsageSnapshot(40, 1000, 500));
+    Check(replay.ReadUsage(threadB) == new LiveUsageTotals(1000, 500, 500, 250, 1500), "IPC snapshot exposes official counters without waiting for log parsing");
+    Check(replay.ReadUsage(threadA) is null, "unsubscribed conversation cannot leak usage into the selected chat");
+    Feed(threadB, new { type = "patches", revision = 41, baseRevision = 40, patches = new[] { new { op = "replace",
+        path = new object[] { "latestTokenUsageInfo", "total" }, value = new { inputTokens = 1500, outputTokens = 600,
+            cachedInputTokens = 700, reasoningOutputTokens = 300, totalTokens = 2100 } } } });
+    Check(replay.ReadUsage(threadB)?.Total == 2100 && replay.ReadUsage(threadB)?.Output == 600, "nested usage patches update official counters atomically");
+    Feed(threadB, new { type = "patches", revision = 42, baseRevision = 39, patches = Array.Empty<object>() });
+    Check(replay.ReadUsage(threadB) is null, "revision gap invalidates usage until a new authoritative snapshot");
+
     // Exercise the IPC receiver, not just a preconstructed presentation string:
     // an ended turn must override an unfinished item still present in its history.
     foreach(var endState in new[]{"completed","interrupted","failed"})
@@ -278,4 +380,35 @@ try
     Check(saved==File.ReadAllText(monthPath),"unchanged monthly data does not produce different archive content");
 }
 finally{if(File.Exists(monthPath))File.Delete(monthPath);}
+
+// 2026-11-10 audit regressions.
+{
+    string Stamp(long ms)=>DateTimeOffset.FromUnixTimeMilliseconds(ms).ToString("O");
+    string Record(long at,string type,object payload)=>System.Text.Json.JsonSerializer.Serialize(new{timestamp=Stamp(at),type,payload});
+    string Started(long at,string turn)=>Record(at,"event_msg",new{type="task_started",turn_id=turn});
+    string Message(long at,string turn,long start)=>Record(at,"event_msg",new{type="item_completed",turn_id=turn,started_at_ms=start,completed_at_ms=at,item=new{type="AgentMessage"}});
+    string Used(long at,string turn,string id,long tokens)=>Record(at,"token_usage_record",new{turn_id=turn,response_id=id,usage=new{output_tokens=tokens}});
+    var late=new ResponseSpeedAnalyzer();
+    foreach(var line in new[]{Started(1000,"A"),Message(3000,"A",2000),Used(3000,"A","r1",100),Started(4000,"B"),
+        Used(4100,"A","late",5),Message(6000,"B",5000),Used(6000,"B","r3",100),Message(8000,"B",7000),Used(8000,"B","r4",100)})late.ObserveLine(line);
+    Check(late.TurnId=="B"&&late.SessionTimedResponses==3&&late.SessionCompletedResponses==4&&late.SessionTimedTokens==300&&late.SessionTimedMilliseconds==3000,
+        "a late usage record of an earlier turn stays untimed without unseating the current turn");
+
+    var foreignHome=Path.Combine(Path.GetTempPath(),"codex-foreign-record-"+Guid.NewGuid().ToString("N"));
+    try
+    {
+        var foreignSessions=Path.Combine(foreignHome,"sessions");Directory.CreateDirectory(foreignSessions);
+        File.WriteAllText(Path.Combine(foreignSessions,"rollout-foreign.jsonl"),"\"token_count\"\n"+
+            "{\"timestamp\":\""+Stamp(1)+"\",\"type\":\"token_usage_record\",\"payload\":\"token_usage_record\"}\n"+
+            "{\"timestamp\":\""+Stamp(2)+"\",\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"ok\",\"thread_id\":\"t\",\"usage\":{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":5}}}\n");
+        var foreignLedger=new UsageLedger();foreignLedger.Refresh(foreignSessions);
+        Check(foreignLedger.Entries.Count==1&&foreignLedger.Entries[0].Output==5,"non-object usage records are skipped and later records still count");
+    }
+    finally{if(Directory.Exists(foreignHome))Directory.Delete(foreignHome,true);}
+
+    var archived=new[]{new MonthlyApiValue("2026-09",1_000_000,12.5m,40,1,true)};
+    var remaining=new UsageEntry("left","t",null,new DateTimeOffset(2026,9,5,0,0,0,TimeSpan.Zero),"gpt-6.1-sol",10,0,0,5,0);
+    Check(MonthlyApiArchive.Update(archived,new[]{remaining},new DateOnly(2026,11,10)).Single()==archived[0],
+        "a closed month with unpriced responses is not shrunk after its logs are deleted");
+}
 Console.WriteLine($"RESULT {checks} checks passed");

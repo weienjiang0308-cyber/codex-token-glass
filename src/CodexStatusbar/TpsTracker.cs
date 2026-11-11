@@ -16,7 +16,8 @@ internal static class MetricFormat
     public static string CompactTokens(long value)
     {
         var magnitude = Math.Abs(value);
-        if (magnitude >= 1_000_000)
+        // 999,950 and above would round to "1000.0K"; they belong to the next unit.
+        if (magnitude >= 999_950)
         {
             return (value / 1_000_000d).ToString("0.0", CultureInfo.InvariantCulture) + "M";
         }

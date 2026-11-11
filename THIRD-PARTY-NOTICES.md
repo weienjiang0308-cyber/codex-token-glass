@@ -1,5 +1,13 @@
 # Third-party notices
 
+## DeepSeek Harness throughput semantics
+
+`HarnessThroughputProjection.cs` adapts the statistical behavior of DeepSeek Harness
+`@deepseek-ai/dsh-session-stats` 0.2.1-rc.5 and its first-token reader. Copyright
+(c) 2026 DeepSeek, MIT. See [LICENSE-DeepSeek-Harness](LICENSE-DeepSeek-Harness).
+Golden test outputs were generated from that installed version; event adaptation
+from Codex is a separate component and is not claimed to be equivalent.
+
 ## Codex Token Glass fork
 
 This distribution is derived from [dongyue-19/codex-statusbar](https://github.com/dongyue-19/codex-statusbar), revision `17f0ddd`, under the MIT license. Its license and the earlier base's attribution below are preserved.
