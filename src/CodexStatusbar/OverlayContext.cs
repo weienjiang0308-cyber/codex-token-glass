@@ -130,6 +130,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     private long _observedRouteVersion = -1;
     private string? _lastPositionSignature;
     private int _themeRefreshTicks;
+    private ObservedThemeFilter _observedCodexTheme;
     private bool _menuReady;
 
     public OverlayContext(
@@ -2636,16 +2637,18 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     /// <summary>
     /// Resolves the effective palette. <c>Auto</c> follows <b>Codex's own</b> appearance setting, falling
     /// back to the Windows app theme only when Codex has not recorded one; <c>Dark</c> / <c>Light</c>
-    /// force the text colours outright.
+    /// force the text colours outright. What Codex is seen to be showing overrides its recorded
+    /// setting, but only once <see cref="ObservedThemeFilter"/> has confirmed it: a dark layer passing
+    /// over Codex for a moment must not turn the panel dark.
     /// </summary>
     private void ApplyEffectiveTheme()
     {
         var codexKind = _codexTheme.Current;
         if (_form.Visible)
         {
-            var observed = CodexUi.DetectVisibleTheme(_lastDock);
-            if (observed != CodexThemeKind.Unknown) codexKind = observed;
+            _observedCodexTheme.Offer(CodexUi.DetectVisibleTheme(_lastDock));
         }
+        if (_observedCodexTheme.Confirmed != CodexThemeKind.Unknown) codexKind = _observedCodexTheme.Confirmed;
         var kind = _settings.ThemePreference switch
         {
             OverlayThemePreference.Dark => OverlayThemeKind.Dark,

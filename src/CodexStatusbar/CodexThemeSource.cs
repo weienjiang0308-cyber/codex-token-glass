@@ -10,6 +10,62 @@ internal enum CodexThemeKind
 }
 
 /// <summary>
+/// Turns the per-poll reading of Codex's on-screen colour into a theme that only changes when the
+/// change is real.
+///
+/// <para>The reading comes from screen pixels, so anything dark that passes over Codex (a screenshot
+/// tool's dim layer, another window, a menu) used to flip the whole panel to the dark palette on the
+/// next poll. A change of theme is therefore adopted only after <see cref="RequiredReadings"/>
+/// consecutive readings agree (the poll runs about every two seconds, so the change has to hold for
+/// four to six), an unreadable sample changes nothing, and the last confirmed theme is kept for as
+/// long as nothing confirmed replaces it. The very first reading is taken as it is: there is nothing
+/// to flip away from yet, and waiting would start a dark Codex with a light panel.</para>
+/// </summary>
+internal struct ObservedThemeFilter
+{
+    internal const int RequiredReadings = 3;
+
+    private CodexThemeKind _candidate;
+    private int _readings;
+
+    /// <summary>The last confirmed theme, or Unknown before any has been confirmed.</summary>
+    public CodexThemeKind Confirmed { get; private set; }
+
+    /// <summary>Feeds one reading. Returns true when <see cref="Confirmed"/> changed.</summary>
+    public bool Offer(CodexThemeKind reading)
+    {
+        if (reading == CodexThemeKind.Unknown || reading == Confirmed)
+        {
+            _candidate = CodexThemeKind.Unknown;
+            _readings = 0;
+            return false;
+        }
+
+        if (Confirmed == CodexThemeKind.Unknown)
+        {
+            Confirmed = reading;
+            return true;
+        }
+
+        if (reading != _candidate)
+        {
+            _candidate = reading;
+            _readings = 0;
+        }
+
+        if (++_readings < RequiredReadings)
+        {
+            return false;
+        }
+
+        Confirmed = reading;
+        _candidate = CodexThemeKind.Unknown;
+        _readings = 0;
+        return true;
+    }
+}
+
+/// <summary>
 /// Reads the theme <b>Codex Desktop itself</b> is using, from the <c>appearanceTheme</c> key in
 /// <c>~/.codex/config.toml</c>.
 ///

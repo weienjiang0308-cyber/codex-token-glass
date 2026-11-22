@@ -294,6 +294,28 @@ internal static class SelfTest
         // A user need not have set appearanceTheme. The production fallback handles Unknown.
         Check("Codex theme: an unset appearance is a supported fallback",
             CodexThemeSource.Parse(["[desktop]", "sansFontSize = 14"]), CodexThemeKind.Unknown);
+
+        // What Codex is seen to be showing is read from screen pixels, so a dark layer passing over
+        // it (a screenshot tool's dim, another window) must not turn the panel dark.
+        var observed = new ObservedThemeFilter();
+        Check("observed theme: nothing is confirmed before the first reading", observed.Confirmed, CodexThemeKind.Unknown);
+        Check("observed theme: the first reading is taken as it is", observed.Offer(CodexThemeKind.Light), true);
+        Check("observed theme: one dark reading does not flip a light panel", observed.Offer(CodexThemeKind.Dark), false);
+        Check("observed theme: a second dark reading still does not", observed.Offer(CodexThemeKind.Dark), false);
+        Check("observed theme: and the panel is still light", observed.Confirmed, CodexThemeKind.Light);
+        Check("observed theme: a light reading in between starts the count again", observed.Offer(CodexThemeKind.Light), false);
+        observed.Offer(CodexThemeKind.Dark);
+        observed.Offer(CodexThemeKind.Dark);
+        Check("observed theme: so two more dark readings are not enough", observed.Confirmed, CodexThemeKind.Light);
+        Check($"observed theme: {ObservedThemeFilter.RequiredReadings} dark readings in a row are a real switch", observed.Offer(CodexThemeKind.Dark), true);
+        Check("observed theme: and the panel follows", observed.Confirmed, CodexThemeKind.Dark);
+        observed.Offer(CodexThemeKind.Light);
+        observed.Offer(CodexThemeKind.Light);
+        Check("observed theme: an unreadable sample (Codex covered) changes nothing", observed.Offer(CodexThemeKind.Unknown), false);
+        Check("observed theme: and also starts the count again", observed.Offer(CodexThemeKind.Light), false);
+        Check("observed theme: the last confirmed theme is kept while Codex is covered", observed.Confirmed, CodexThemeKind.Dark);
+        Check("observed theme: without a composer to look at, no theme is read",
+            CodexUi.DetectVisibleTheme(ComposerDockSnapshot.Empty), CodexThemeKind.Unknown);
     }
 
     /// <summary>Folds the whole position suite into the default gate instead of duplicating it.</summary>

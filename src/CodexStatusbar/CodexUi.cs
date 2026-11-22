@@ -223,19 +223,45 @@ internal static class CodexUi
     public static CodexThemeKind DetectVisibleTheme(ComposerDockSnapshot dock)
     {
         if (dock.ComposerRect.IsEmpty) return CodexThemeKind.Unknown;
+        // The input card's left inset is outside the overlay and avoids prompt text. Three points down
+        // that inset are read, and the middle brightness decides, so one odd pixel cannot.
+        var x = dock.ComposerRect.Left + 6;
+        var rows = new[] { 8, 12, 16 }.Select(offset => dock.ComposerRect.Top + offset)
+            .Where(y => y < dock.ComposerRect.Bottom).ToArray();
+        if (rows.Length == 0) return CodexThemeKind.Unknown;
+        // Screen pixels only describe Codex where Codex is what is showing. If another window is on
+        // top at a sample point (a screenshot tool's dim layer, a dialog, this program's own panel),
+        // the colour there is not Codex's and must not be read as its theme.
+        if (dock.WindowHandle != 0)
+        {
+            var host = GetAncestor(new IntPtr(dock.WindowHandle), GaRoot);
+            foreach (var y in rows)
+            {
+                var top = WindowFromPoint(new NativePoint { X = x, Y = y });
+                if (top == IntPtr.Zero || GetAncestor(top, GaRoot) != host) return CodexThemeKind.Unknown;
+            }
+        }
         var dc = GetDC(IntPtr.Zero);
         if (dc == IntPtr.Zero) return CodexThemeKind.Unknown;
         try
         {
-            // The input card's left inset is outside the overlay and avoids prompt text.
-            var pixel = GetPixel(dc, dock.ComposerRect.Left + 6, dock.ComposerRect.Top + 8);
-            if (pixel == uint.MaxValue) return CodexThemeKind.Unknown;
-            var brightness = .2126 * (pixel & 255) + .7152 * ((pixel >> 8) & 255) + .0722 * ((pixel >> 16) & 255);
-            return brightness >= 128 ? CodexThemeKind.Light : CodexThemeKind.Dark;
+            var levels = new List<double>(rows.Length);
+            foreach (var y in rows)
+            {
+                var pixel = GetPixel(dc, x, y);
+                if (pixel == uint.MaxValue) return CodexThemeKind.Unknown;
+                levels.Add(.2126 * (pixel & 255) + .7152 * ((pixel >> 8) & 255) + .0722 * ((pixel >> 16) & 255));
+            }
+            levels.Sort();
+            return levels[levels.Count / 2] >= 128 ? CodexThemeKind.Light : CodexThemeKind.Dark;
         }
         finally { ReleaseDC(IntPtr.Zero, dc); }
     }
 
+    private const uint GaRoot = 2;
+    [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X; public int Y; }
+    [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(NativePoint point);
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr window, uint flags);
     [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);
     [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
     [DllImport("gdi32.dll")] private static extern uint GetPixel(IntPtr dc, int x, int y);
