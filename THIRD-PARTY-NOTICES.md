@@ -14,7 +14,7 @@ This distribution is derived from [dongyue-19/codex-statusbar](https://github.co
 
 The interactive material uses `LiquidGlass` 1.0.0 by shayann07, Apache-2.0: [source](https://github.com/shayann07/liquidglass), with license/notice copies in `assets/liquidglass/`.
 
-Rendering uses SkiaSharp 4.153.1, MIT, [source](https://github.com/mono/SkiaSharp). Inter 4.1 is bundled under SIL Open Font License 1.1; see `assets/fonts/LICENSE-Inter.txt`. The settings vector is from Lucide under ISC; see `assets/icons/LICENSE-LUCIDE.txt`.
+Rendering uses SkiaSharp 4.153.1, MIT, [source](https://github.com/mono/SkiaSharp). Inter 4.1 (Regular, SemiBold, Bold) is bundled under SIL Open Font License 1.1; see `assets/fonts/LICENSE-Inter.txt`. Noto Sans SC (Regular, Medium, Bold; Adobe/Google Noto CJK SubsetOTF) is bundled under SIL Open Font License 1.1; see `assets/fonts/LICENSE-NotoSansSC.txt`. ZCOOL KuaiLe Regular (站酷快乐体, [source](https://github.com/googlefonts/zcool-kuaile)), used only for the front page title, is bundled under SIL Open Font License 1.1; see `assets/fonts/LICENSE-ZCOOLKuaiLe.txt`. Apple SF Pro and PingFang are not bundled: their licenses do not permit redistribution or use on non-Apple platforms. The settings vector is from Lucide under ISC; see `assets/icons/LICENSE-LUCIDE.txt`.
 
 CodexStatusbar is MIT licensed — see [`LICENSE`](LICENSE). It is a derivative work, and the
 attribution below is a condition of the licences it is derived under. GitHub's licence detector

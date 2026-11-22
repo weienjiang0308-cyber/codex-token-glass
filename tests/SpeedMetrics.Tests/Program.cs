@@ -411,4 +411,324 @@ finally{if(File.Exists(monthPath))File.Delete(monthPath);}
     Check(MonthlyApiArchive.Update(archived,new[]{remaining},new DateOnly(2026,11,10)).Single()==archived[0],
         "a closed month with unpriced responses is not shrunk after its logs are deleted");
 }
+
+// 2026-11-22 glass.33 speed engine refactor & gateway alignment regressions.
+{
+    var hidden = new ResponseSpeedAnalyzer();
+    Begin(hidden, "turn-1", 0);
+    Item(hidden, 4000, 4800, "AgentMessage");
+    hidden.ObserveLine(Row("token_usage_record", new { response_id = "hid-1", turn_id = "turn-1", usage = new { output_tokens = 322, reasoning_output_tokens = 230 } }, 5000));
+    Check(hidden.SessionTimedResponses == 0 && hidden.SessionHiddenReasoningResponses == 1 && hidden.SessionPeakTps is null,
+        "hidden reasoning without Reasoning item is excluded instead of inflating decode throughput");
+
+    var burst = new ResponseSpeedAnalyzer();
+    Begin(burst, "turn-1", 0);
+    Item(burst, 8170, 8181, "Reasoning");
+    Item(burst, 8199, 8200, "AgentMessage");
+    burst.ObserveLine(Row("token_usage_record", new { response_id = "burst-1", turn_id = "turn-1", usage = new { output_tokens = 314, reasoning_output_tokens = 0 } }, 8211));
+    Check(burst.SessionTimedResponses == 0 && burst.SessionBufferedBurstResponses == 1 && burst.SessionPeakTps is null,
+        "buffered burst response (314 tokens in 41ms) is excluded from session throughput and peak");
+    Check(!ResponseTimingRules.IsGatewayBufferedBurst(outputTokens: 900, decodeMs: 300, totalMs: 450),
+        "genuinely ultra-fast streaming model (3000 tok/s with 67% stream share) is not misclassified as a buffered burst");
+    Check(ResponseTimingRules.IsGatewayBufferedBurst(outputTokens: 400, decodeMs: 200, totalMs: 7000),
+        "proxy-buffered response waiting 6.8s then flushing 400 tokens in 200ms (<4% share) is flagged as buffered burst");
+
+    var crossTurnPeak = new ResponseSpeedAnalyzer();
+    Begin(crossTurnPeak, "turn-1", 0);
+    Item(crossTurnPeak, 1000, 1500, "Reasoning");
+    crossTurnPeak.ObserveLine(Row("token_usage_record", new { response_id = "p1", turn_id = "turn-1", usage = new { output_tokens = 300, reasoning_output_tokens = 100 } }, 2000));
+    Begin(crossTurnPeak, "turn-2", 5000);
+    Item(crossTurnPeak, 6000, 6500, "AgentMessage");
+    crossTurnPeak.ObserveLine(Row("token_usage_record", new { response_id = "p2", turn_id = "turn-2", usage = new { output_tokens = 100, reasoning_output_tokens = 0 } }, 7000));
+    crossTurnPeak.ObserveLine(Row("token_usage_record", new { response_id = "p3-tool", turn_id = "turn-2", usage = new { output_tokens = 80, reasoning_output_tokens = 0 } }, 9000));
+    Check(crossTurnPeak.SessionPeakTps == 300 && crossTurnPeak.LastValidTps == 100 && crossTurnPeak.SessionTimedResponses == 2 && crossTurnPeak.SessionCompletedResponses == 3,
+        "session peak survives across turns and last valid response speed survives subsequent untimed tool calls");
+
+    var gatewayDir = Path.Combine(Path.GetTempPath(), "codex-gateway-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(gatewayDir);
+    try
+    {
+        var rolloutPath = Path.Combine(gatewayDir, "rollout.jsonl");
+        var gatewayPath = Path.Combine(gatewayDir, "usage.jsonl");
+        File.WriteAllText(rolloutPath,
+            Row("event_msg", new { type = "task_started", turn_id = "turn-g" }, 0) + "\n"
+            + Row("token_usage_record", new { response_id = "resp_tool_1", turn_id = "turn-g", usage = new { output_tokens = 240, reasoning_output_tokens = 0 } }, 5000) + "\n"
+            + Row("token_usage_record", new { response_id = "resp_burst_2", turn_id = "turn-g", usage = new { output_tokens = 400, reasoning_output_tokens = 0 } }, 9000) + "\n"
+            + Row("event_msg", new { type = "item_completed", turn_id = "turn-g", item = new { type = "AgentMessage" }, started_at_ms = 12000, completed_at_ms = 13000 }, 13000) + "\n"
+            + Row("token_usage_record", new { response_id = "resp_hid_3", turn_id = "turn-g", usage = new { output_tokens = 300, reasoning_output_tokens = 200 } }, 13100) + "\n");
+
+        File.WriteAllText(gatewayPath,
+            JsonSerializer.Serialize(new { response_id = "resp_tool_1", ms = 5000, ttft_ms = 3000, out_placeholder = 0, @out = 240, reasoning = 0, status = 200 }) + "\n"
+            + JsonSerializer.Serialize(new { response_id = "resp_burst_2", ms = 7000, ttft_ms = 6950, @out = 400, reasoning = 0, status = 200 }) + "\n"
+            + JsonSerializer.Serialize(new { response_id = "resp_hid_3", ms = 4500, ttft_ms = 3400, @out = 300, reasoning = 200, status = 200 }) + "\n");
+
+        var store = new MagpieGatewayTimingStore(gatewayPath);
+        using var observer = new SpeedObserver(enableLive: false, gatewayLookup: store);
+        var gatewayReading = observer.Read("gateway-chat", rolloutPath);
+        Check(gatewayReading.TimedResponses == 1 && gatewayReading.CompletedResponses == 3 && gatewayReading.GatewayMatchedResponses == 3,
+            "gateway store matches pure tool call, burst, and hidden reasoning by response_id");
+        Check(gatewayReading.AverageTps == 120 && gatewayReading.LastResponseTps == 120 && gatewayReading.PeakResponseTps == 120,
+            "pure tool call timed accurately via gateway decode window (240 tokens / 2000ms = 120 tok/s)");
+        Check(gatewayReading.BufferedBurstResponses == 1 && gatewayReading.HiddenReasoningResponses == 1 && gatewayReading.TimingSource == "gateway",
+            "gateway store filters burst and hidden reasoning while reporting gateway source");
+        Check(gatewayReading.LastTtftMs == 3400 && gatewayReading.EndToEndAverageTps is double e2e && Math.Abs(e2e - 940000d / 16500d) < 1e-6,
+            "gateway store supplies accurate TTFT and end-to-end throughput");
+
+        // Delayed gateway flush: rollout arrives before usage.jsonl has the line, then usage.jsonl appends.
+        File.AppendAllText(rolloutPath,
+            Row("token_usage_record", new { response_id = "resp_late_4", turn_id = "turn-g", usage = new { output_tokens = 200, reasoning_output_tokens = 0 } }, 20000) + "\n");
+        var beforeFlush = observer.Read("gateway-chat", rolloutPath);
+        Check(beforeFlush.CompletedResponses == 4 && beforeFlush.TimedResponses == 1,
+            "unmatched pure tool response waits for gateway flush instead of guessing");
+        Thread.Sleep(300);
+        File.AppendAllText(gatewayPath,
+            JsonSerializer.Serialize(new { response_id = "resp_late_4", ms = 3000, ttft_ms = 2000, @out = 200, reasoning = 0, status = 200 }) + "\n");
+        var afterFlush = observer.Read("gateway-chat", rolloutPath);
+        Check(afterFlush.TimedResponses == 2 && afterFlush.GatewayMatchedResponses == 4 && afterFlush.LastResponseTps == 200
+            && afterFlush.PeakResponseTps == 200 && Math.Abs(afterFlush.AverageTps!.Value - 440000d / 3000d) < 1e-6,
+            "delayed gateway record triggers automatic match and updates throughput, last speed, and peak");
+    }
+    finally { Directory.Delete(gatewayDir, true); }
+}
+
+// 2026-11-22 glass.61 model-route audit regression suite (P1/P2 fixes).
+{
+    // 1. Audit reproduction: mixed legacy + modern carriers, late earlier-turn response,
+    // missing cached_input_tokens field, and follow-up legacy span.
+    var mixedDir = Path.Combine(Path.GetTempPath(), "codex-audit-mixed-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(mixedDir);
+    try
+    {
+        var file = Path.Combine(mixedDir, "mixed.jsonl");
+        File.WriteAllText(file, string.Join("\n", new[]
+        {
+            Row("session_meta", new { id = "thread-mixed" }, 0),
+            Row("turn_context", new { turn_id = "turn-A", model = "model-A" }, 100),
+            Row("event_msg", new { type = "task_started", turn_id = "turn-A" }, 110),
+            Row("event_msg", new { type = "token_count", info = new {
+                total_token_usage = new { input_tokens = 100, output_tokens = 10 },
+                last_token_usage = new { input_tokens = 100, output_tokens = 10 }
+            }}, 500),
+            Row("turn_context", new { turn_id = "turn-B", model = "model-B" }, 1000),
+            Row("event_msg", new { type = "task_started", turn_id = "turn-B" }, 1010),
+            Row("token_usage_record", new { response_id = "resp-A-late", thread_id = "thread-mixed", turn_id = "turn-A",
+                usage = new { input_tokens = 200, output_tokens = 20 } }, 1200),
+            Row("token_usage_record", new { response_id = "resp-B-1", thread_id = "thread-mixed", turn_id = "turn-B",
+                usage = new { input_tokens = 300, cached_input_tokens = 200, output_tokens = 30 } }, 2000)
+        }) + "\n");
+
+        var ledger = new UsageLedger();
+        ledger.Refresh(mixedDir);
+        var sum = UsageTotals.Sum(ledger.Entries);
+        var modelA = ledger.Entries.Where(e => e.Model == "model-A").ToArray();
+        var modelB = ledger.Entries.Where(e => e.Model == "model-B").ToArray();
+        Check(ledger.Errors == 0 && ledger.Entries.Count == 3 && sum.Total == 660,
+            "mixed legacy + modern carrier counts all 3 independent requests (660 tokens, 0 errors)");
+        Check(modelA.Length == 2 && UsageTotals.Sum(modelA).Total == 330 && modelB.Length == 1 && UsageTotals.Sum(modelB).Total == 330,
+            "late modern response for turn-A is attributed back to model-A, not model-B");
+        Check(sum.CacheKnownInput == 300 && sum.CacheKnownResponses == 1 && sum.CacheUnknownResponses == 2
+            && sum.CachePercent is double cp && Math.Abs(cp - (20000d / 300d)) < 1e-6,
+            "missing cached_input_tokens is excluded from cache-rate denominator (200/300 = 66.67%, not 40%)");
+
+        // Append a genuine post-modern legacy-only delta: must still be captured, while mirrored count is ignored.
+        File.AppendAllText(file, string.Join("\n", new[]
+        {
+            Row("event_msg", new { type = "token_count", info = new {
+                total_token_usage = new { input_tokens = 600, cached_input_tokens = 200, output_tokens = 60 },
+                last_token_usage = new { input_tokens = 300, cached_input_tokens = 200, output_tokens = 30 }
+            }}, 2005),
+            Row("event_msg", new { type = "token_count", info = new {
+                total_token_usage = new { input_tokens = 700, cached_input_tokens = 250, output_tokens = 70 },
+                last_token_usage = new { input_tokens = 100, cached_input_tokens = 50, output_tokens = 10 }
+            }}, 3000)
+        }) + "\n");
+        ledger.Refresh(mixedDir);
+        Check(ledger.Entries.Count == 4 && UsageTotals.Sum(ledger.Entries).Total == 770,
+            "post-modern mirror token_count is ignored while genuine post-modern legacy delta is recorded");
+    }
+    finally { Directory.Delete(mixedDir, true); }
+
+    // 2. Real three switches + same-model route change + A->B->A + pending segment + display reset.
+    var switchDir = Path.Combine(Path.GetTempPath(), "codex-audit-switch-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(switchDir);
+    try
+    {
+        var rolloutPath = Path.Combine(switchDir, "switch.jsonl");
+        var gatewayPath = Path.Combine(switchDir, "usage.jsonl");
+
+        File.WriteAllText(gatewayPath, string.Join("\n", new[]
+        {
+            JsonSerializer.Serialize(new { response_id = "r1", agent = "codex", provider = "google-vertex", model = "gemini-4-neon", served = "gemini-4-neon", status = 200, @in = 50000, cache_read = 950000, cache_write = 0, @out = 200, ms = 2500, ttft_ms = 1500, flow_ms = 900 }),
+            JsonSerializer.Serialize(new { response_id = "r2", agent = "codex", provider = "devin", model = "gemini-4-neon", served = "gemini-4-neon", status = 200, @in = 284989, cache_read = 0, cache_write = 0, @out = 100, ms = 3000, ttft_ms = 2000, flow_ms = 800 }),
+            JsonSerializer.Serialize(new { response_id = "r3", agent = "codex", provider = "devin", model = "claude-opus-5-5-fast", served = "claude-opus-5-5-fast", status = 200, @in = 3199, cache_read = 516888, cache_write = 0, @out = 300, ms = 3500, ttft_ms = 1500, flow_ms = 1800 }),
+            JsonSerializer.Serialize(new { response_id = "r4", agent = "codex", provider = "devin", model = "claude-opus-5-5", served = "claude-opus-5-5", status = 200, @in = 144173, cache_read = 0, cache_write = 0, @out = 150, ms = 4000, ttft_ms = 2500, flow_ms = 1200 }),
+            JsonSerializer.Serialize(new { response_id = "r5", agent = "codex", provider = "devin", model = "gemini-4-neon", served = "gemini-4-neon", status = 200, @in = 10000, cache_read = 90000, cache_write = 0, @out = 50, ms = 2000, ttft_ms = 1000, flow_ms = 900 }),
+            // Ignored gateway rows: non-200 failure, probe, foreign agent.
+            JsonSerializer.Serialize(new { response_id = "r_fail", agent = "codex", provider = "devin", status = 499, @in = 1000, @out = 0, ms = 500 }),
+            JsonSerializer.Serialize(new { response_id = "r_probe", agent = "codex", source = "probe", provider = "devin", status = 200, @in = 10, @out = 10, ms = 500 }),
+            JsonSerializer.Serialize(new { response_id = "r_foreign", agent = "claude-desktop", provider = "devin", status = 200, @in = 10, @out = 10, ms = 500 })
+        }) + "\n");
+
+        var store = new MagpieGatewayTimingStore(gatewayPath);
+        store.Refresh();
+        Check(!store.TryGet("r_fail", out _) && !store.TryGet("r_probe", out _) && !store.TryGet("r_foreign", out _),
+            "gateway store filters out failed 499 attempts, probes, and non-codex agents");
+
+        // Step 1: Vertex Gemini
+        File.WriteAllText(rolloutPath, string.Join("\n", new[]
+        {
+            Row("session_meta", new { id = "t-sw" }, 0),
+            Row("turn_context", new { turn_id = "t1", model = "gemini-4-neon" }, 100),
+            Row("event_msg", new { type = "task_started", turn_id = "t1" }, 110),
+            Row("token_usage_record", new { response_id = "r1", thread_id = "t-sw", turn_id = "t1",
+                usage = new { input_tokens = 1000000, cached_input_tokens = 950000, output_tokens = 200 } }, 2600)
+        }) + "\n");
+        using var obs = new SpeedObserver(enableLive: false, gatewayLookup: store);
+        var disp = new ResponseSpeedDisplay();
+        var s1 = obs.Read("t-sw", rolloutPath);
+        Check(s1.SegmentIndex == 1 && s1.CurrentRoute == "google-vertex" && s1.SegmentCacheHitPercent == 95d && disp.Read(s1).Rate == 200d,
+            "segment 1 tracks Vertex Gemini with 95% cache hit and 200 tok/s");
+
+        // Step 2: Same model name, switched route to Devin (0 / 284,989)
+        File.AppendAllText(rolloutPath, string.Join("\n", new[]
+        {
+            Row("turn_context", new { turn_id = "t2", model = "gemini-4-neon" }, 3000),
+            Row("event_msg", new { type = "task_started", turn_id = "t2" }, 3010),
+            Row("token_usage_record", new { response_id = "r2", thread_id = "t-sw", turn_id = "t2",
+                usage = new { input_tokens = 284989, cached_input_tokens = 0, output_tokens = 100 } }, 6000)
+        }) + "\n");
+        var s2 = obs.Read("t-sw", rolloutPath);
+        Check(s2.SegmentIndex == 2 && s2.CurrentRoute == "devin" && s2.SegmentCacheHitPercent == 0d
+            && s2.SegmentInputTokens == 284989 && s2.CompletedResponses == 1 && disp.Read(s2).Rate == 100d,
+            "same-model route switch (Vertex -> Devin) starts segment 2 with 0% cache hit and isolated speed");
+
+        // Step 3: Switch to Claude Opus fast (immediate cache hit 516,888 / 520,087)
+        File.AppendAllText(rolloutPath, string.Join("\n", new[]
+        {
+            Row("turn_context", new { turn_id = "t3", model = "claude-opus-5-5-fast" }, 7000),
+            Row("event_msg", new { type = "task_started", turn_id = "t3" }, 7010),
+            Row("token_usage_record", new { response_id = "r3", thread_id = "t-sw", turn_id = "t3",
+                usage = new { input_tokens = 520087, cached_input_tokens = 516888, output_tokens = 300 } }, 10500)
+        }) + "\n");
+        var s3 = obs.Read("t-sw", rolloutPath);
+        Check(s3.SegmentIndex == 3 && s3.CurrentModel == "claude-opus-5-5-fast"
+            && s3.SegmentCacheHitPercent is double p3 && Math.Abs(p3 - (51688800d / 520087d)) < 1e-4 && disp.Read(s3).Rate == 150d,
+            "switching to Claude Opus fast preserves its first-response server cache hit");
+
+        // Step 4a: Switch model to non-fast BEFORE sending any response -> pending segment, no old speed!
+        File.AppendAllText(rolloutPath,
+            Row("turn_context", new { turn_id = "t4", model = "claude-opus-5-5" }, 11000) + "\n");
+        var s4Pending = obs.Read("t-sw", rolloutPath);
+        Check(s4Pending.SegmentIndex == 4 && s4Pending.SegmentPending && s4Pending.CompletedResponses == 0
+            && s4Pending.SegmentTotalTokens == 0 && s4Pending.SegmentCacheHitPercent is null
+            && disp.Read(s4Pending) == (null, false),
+            "model switch before first response shows pending segment with unknown speed/cache and never holds old speed");
+
+        // Step 4b: Late response for turn t3 arrives while on pending segment 4 -> stays in segment 3, never pollutes segment 4!
+        File.AppendAllText(rolloutPath,
+            Row("token_usage_record", new { response_id = "r3-late", thread_id = "t-sw", turn_id = "t3",
+                usage = new { input_tokens = 1000, cached_input_tokens = 800, output_tokens = 25 } }, 11200) + "\n");
+        var s4StillPending = obs.Read("t-sw", rolloutPath);
+        Check(s4StillPending.SegmentIndex == 4 && s4StillPending.SegmentPending && s4StillPending.CompletedResponses == 0
+            && s4StillPending.SegmentTotalTokens == 0 && disp.Read(s4StillPending) == (null, false),
+            "late response from previous turn is attributed to its original segment without polluting the newly selected model");
+
+        // Step 4c + Step 5 (A->B->A: back to Devin Gemini as segment 5, separate from segment 2)
+        File.AppendAllText(rolloutPath, string.Join("\n", new[]
+        {
+            Row("event_msg", new { type = "task_started", turn_id = "t4" }, 11500),
+            Row("token_usage_record", new { response_id = "r4", thread_id = "t-sw", turn_id = "t4",
+                usage = new { input_tokens = 144173, cached_input_tokens = 0, output_tokens = 150 } }, 15500),
+            Row("turn_context", new { turn_id = "t5", model = "gemini-4-neon" }, 16000),
+            Row("event_msg", new { type = "task_started", turn_id = "t5" }, 16010),
+            Row("token_usage_record", new { response_id = "r5", thread_id = "t-sw", turn_id = "t5",
+                usage = new { input_tokens = 100000, cached_input_tokens = 90000, output_tokens = 50 } }, 18000)
+        }) + "\n");
+        var s5 = obs.Read("t-sw", rolloutPath);
+        Check(s5.SegmentIndex == 5 && s5.CurrentModel == "gemini-4-neon" && s5.CurrentRoute == "devin"
+            && s5.SegmentInputTokens == 100000 && s5.SegmentCacheHitPercent == 90d && disp.Read(s5).Rate == 50d,
+            "A->B->A opens a brand-new segment 5 without merging with earlier segment 2");
+
+        // Verify invariant: sum of all segments == session total, and UsageLedger merges route+model history.
+        var fullAnalyzer = new ResponseSpeedAnalyzer(preferModern: false, gatewayLookup: store);
+        foreach (var line in File.ReadLines(rolloutPath)) fullAnalyzer.ObserveLine(line);
+        Check(fullAnalyzer.Segments.Sum(x => x.TotalTokens) == fullAnalyzer.SessionTotalTokens
+            && fullAnalyzer.Segments.Sum(x => x.CompletedResponses) == fullAnalyzer.SessionCompletedResponses,
+            "sum of all segments equals session totals for both tokens and completed responses");
+
+        var swLedger = new UsageLedger(store);
+        swLedger.Refresh(switchDir);
+        var devinGeminiHistory = swLedger.Entries.Where(e => e.RouteAndModelKey == "gemini-4-neon · devin").ToArray();
+        var vertexGeminiHistory = swLedger.Entries.Where(e => e.RouteAndModelKey == "gemini-4-neon · google-vertex").ToArray();
+        Check(devinGeminiHistory.Length == 2 && vertexGeminiHistory.Length == 1,
+            "historical ledger separates Vertex Gemini from Devin Gemini and merges A->B->A segments under Devin Gemini");
+    }
+    finally { Directory.Delete(switchDir, true); }
+
+    // 3. P2-2 flow_ms cross-check: buffered flush with short flow_ms (1ms) is rejected even if (ms - ttft) > 80ms.
+    {
+        Check(ResponseTimingRules.IsGatewayBufferedBurst(outputTokens: 252, decodeMs: 618, totalMs: 5286, flowMs: 1),
+            "gateway flow_ms=1ms for 252 output tokens is classified as buffered burst despite 618ms decode window");
+        Check(!ResponseTimingRules.IsGatewayBufferedBurst(outputTokens: 710, decodeMs: 5131, totalMs: 10451, flowMs: 5982),
+            "normal streaming response with 5982ms flow_ms is kept for throughput");
+    }
+
+    // 4. ID collision, dual-source divergence, gateway ambiguity, and compaction regression.
+    var conflictDir = Path.Combine(Path.GetTempPath(), "codex-audit-conflict-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(conflictDir);
+    try
+    {
+        var gwPath = Path.Combine(conflictDir, "gw.jsonl");
+        File.WriteAllText(gwPath, string.Join("\n", new[]
+        {
+            // Divergent counts with Codex for resp-div
+            JsonSerializer.Serialize(new { response_id = "resp-div", agent = "codex", provider = "devin", model = "claude-opus-5-5", served = "claude-opus-5-5", status = 200, @in = 500, cache_read = 400, cache_write = 0, @out = 50, ms = 2000, ttft_ms = 1000 }),
+            // Ambiguous duplicate gateway response_id with conflicting counts
+            JsonSerializer.Serialize(new { response_id = "resp-amb", agent = "codex", provider = "devin", status = 200, @in = 100, cache_read = 0, @out = 20, ms = 1000, ttft_ms = 500 }),
+            JsonSerializer.Serialize(new { response_id = "resp-amb", agent = "codex", provider = "google-vertex", status = 200, @in = 200, cache_read = 0, @out = 40, ms = 1500, ttft_ms = 500 })
+        }) + "\n");
+        var gwStore = new MagpieGatewayTimingStore(gwPath);
+        gwStore.Refresh();
+        Check(!gwStore.TryGet("resp-amb", out _) && gwStore.TryGetInspect("resp-amb", out var amb) && amb.IsAmbiguous,
+            "ambiguous gateway response_id is rejected from matching and flagged for diagnostics");
+
+        File.WriteAllText(Path.Combine(conflictDir, "s1.jsonl"), string.Join("\n", new[]
+        {
+            Row("session_meta", new { id = "t-one" }, 0),
+            Row("token_usage_record", new { response_id = "resp-div", thread_id = "t-one", usage = new { input_tokens = 1000, cached_input_tokens = 500, output_tokens = 50 } }, 1000),
+            Row("token_usage_record", new { response_id = "resp-amb", thread_id = "t-one", usage = new { input_tokens = 100, cached_input_tokens = 0, output_tokens = 20 } }, 2000),
+            Row("token_usage_record", new { response_id = "shared-id", thread_id = "t-one", usage = new { input_tokens = 100, cached_input_tokens = 50, output_tokens = 10 } }, 3000)
+        }) + "\n");
+        File.WriteAllText(Path.Combine(conflictDir, "s2.jsonl"), string.Join("\n", new[]
+        {
+            Row("session_meta", new { id = "t-two" }, 0),
+            Row("token_usage_record", new { response_id = "shared-id", thread_id = "t-two", usage = new { input_tokens = 250, cached_input_tokens = 0, output_tokens = 25 } }, 3500),
+            // OpenAI Chat Completions and Anthropic native usage field normalization
+            Row("token_usage_record", new { response_id = "chat-compat", thread_id = "t-two", usage = new { prompt_tokens = 400, completion_tokens = 40, prompt_tokens_details = new { cached_tokens = 300 } } }, 4000),
+            Row("token_usage_record", new { response_id = "anthropic-compat", thread_id = "t-two", usage = new { input_tokens = 100, cache_read_input_tokens = 300, cache_creation_input_tokens = 50, output_tokens = 25 } }, 4500),
+            // Compaction regression in legacy-only file
+            Row("event_msg", new { type = "token_count", info = new { total_token_usage = new { input_tokens = 1000, cached_input_tokens = 0, output_tokens = 100 } } }, 5000),
+            Row("event_msg", new { type = "token_count", info = new { total_token_usage = new { input_tokens = 300, cached_input_tokens = 0, output_tokens = 30 } } }, 5500),
+            Row("event_msg", new { type = "token_count", info = new { total_token_usage = new { input_tokens = 500, cached_input_tokens = 0, output_tokens = 50 } } }, 6000)
+        }) + "\n");
+
+        var ledger = new UsageLedger(gwStore);
+        ledger.Refresh(conflictDir);
+        var div = ledger.Entries.Single(e => e.Id == "resp-div");
+        Check(div.Input == 1000 && div.HasSourceConflict && div.GatewayInput == 900 && div.Route == "devin",
+            "codex/gateway count divergence keeps Codex counts without summing and records gateway values for diagnostics");
+        var collisions = ledger.Entries.Where(e => e.Id == "shared-id").ToArray();
+        Check(collisions.Length == 2 && collisions.All(c => c.HasSourceConflict),
+            "cross-thread response_id collision with different counts keeps both entries and flags conflict");
+        var chatCompat = ledger.Entries.Single(e => e.Id == "chat-compat");
+        var anthCompat = ledger.Entries.Single(e => e.Id == "anthropic-compat");
+        Check(chatCompat.Input == 400 && chatCompat.Cached == 300 && chatCompat.CacheKnown
+            && anthCompat.Input == 450 && anthCompat.Cached == 300 && anthCompat.CacheWrite == 50 && anthCompat.CacheKnown,
+            "OpenAI Chat Completions and Anthropic native usage fields normalize into full input and known cache");
+        var ambEntry = ledger.Entries.Single(e => e.Id == "resp-amb");
+        Check(ambEntry.Route is null && ambEntry.HasSourceConflict,
+            "ambiguous gateway entry does not guess a route and marks conflict");
+    }
+    finally { Directory.Delete(conflictDir, true); }
+}
 Console.WriteLine($"RESULT {checks} checks passed");

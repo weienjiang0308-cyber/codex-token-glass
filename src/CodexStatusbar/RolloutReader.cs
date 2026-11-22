@@ -227,6 +227,8 @@ internal sealed class RolloutReader
         State.ContextUsedTokens = 0;
         State.ContextWindowTokens = 0;
         State.HasCumulativeUsage = false;
+        State.CacheKnownInputTokens = -1;
+        State.CurrentModel = null;
         State.HasRolloutUsage = false;
         State.CurrentTurnId = null;
         State.TurnStartedAtMs = null;

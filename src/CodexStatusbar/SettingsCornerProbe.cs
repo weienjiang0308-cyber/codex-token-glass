@@ -13,7 +13,7 @@ internal static class SettingsCornerProbe
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);Application.EnableVisualStyles();
         using var form=new SettingsForm(()=>OverlayThemePalette.For(OverlayThemeKind.Light),()=>997500);
-        var close=form.Controls.OfType<GlassButton>().Single(c=>c.Text=="×");
+        var close=form.Controls.OfType<GlassButton>().Where(c=>c.Tag is string tag && tag.StartsWith("text",StringComparison.Ordinal)).OrderBy(c=>c.Left).Last();
         foreach(Control control in form.Controls)if(control!=close)control.Enabled=false;
         using var timer=new System.Windows.Forms.Timer{Interval=900};var phase=0;var mismatch=0;
         timer.Tick+=(_,_)=>
@@ -22,7 +22,7 @@ internal static class SettingsCornerProbe
             using(var g=Graphics.FromImage(screenshot))g.CopyFromScreen(form.Right-120,form.Top,0,0,screenshot.Size);
             var state=new[]{"idle","hover","pressed","released","opaque","restored"}[phase];
             screenshot.Save(Path.Combine(directory,"corner-"+state+".png"));
-            if(typeof(SettingsForm).GetField("_materialFrame",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(form) is Bitmap material)
+            if(typeof(SettingsForm).GetField("_materialFrame",BindingFlags.Instance|BindingFlags.NonPublic)?.GetValue(form) is Bitmap material)
             {
                 material.Save(Path.Combine(directory,"material-"+state+".png"));
                 var offset=form.ClientSize.Width-120;
@@ -45,8 +45,7 @@ internal static class SettingsCornerProbe
                 typeof(GlassButton).GetMethod("OnMouseLeave",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(close,new object[]{EventArgs.Empty});
                 timer.Interval=1500;
             }
-            else if(phase==3)form.ProbeClarity.Value=0;
-            else if(phase==4)form.ProbeClarity.Value=clarity;
+            else if(phase is 3 or 4)form.Invalidate(true);
             else {timer.Stop();form.Close();}
             phase++;
         };

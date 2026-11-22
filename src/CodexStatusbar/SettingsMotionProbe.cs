@@ -32,13 +32,13 @@ internal static class SettingsMotionProbe
             var next=(int)((time-.6)/3);
             if(next!=phase)
             {
-                if(phase>=0)Finish(phase==0?"context":"clarity");
-                if(next>=2)
+                if(phase>=0)Finish("context");
+                if(next>=1)
                 {
                     timer.Stop();File.WriteAllText(Path.Combine(directory,"motion.json"),JsonSerializer.Serialize(results,new JsonSerializerOptions{WriteIndented=true}));
                     form.Close();return;
                 }
-                phase=next;slider=phase==0?form.ProbeContext:form.ProbeClarity;inputs=0;
+                phase=next;slider=form.ProbeContext;inputs=0;
                 form.ProbeRenderMs.Clear();form.ProbeFrameTimes.Clear();form.MotionProbeActive=true;slider.ProbeDown(22);
             }
             var t=((time-.6)%3)/3;var fraction=(1-Math.Cos(2*Math.PI*t))/2;

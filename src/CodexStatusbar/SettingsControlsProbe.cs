@@ -28,8 +28,8 @@ internal static class SettingsControlsProbe
         {
             if(phase++==0)
             {
-                foreach(var control in form.Controls.Cast<Control>().Where(c=>c is NumericUpDown or ComboBox))
-                foreach(var label in form.Controls.OfType<Label>())
+                foreach(var control in form.Controls.Cast<Control>().Where(c=>c.Visible && c is IosStepper or GlassButton or ContextSlider or IosSwitch or IosValueField))
+                foreach(var label in form.Controls.OfType<Label>().Where(l=>l.Visible && l.Text.Length>0))
                     if(control.Bounds.IntersectsWith(label.Bounds))overlaps.Add(control.AccessibleName+" / "+label.Text);
                 editor.Text="1,000,000";
                 editor.UpButton();edited=editor.Value==1_010_000;
@@ -38,7 +38,7 @@ internal static class SettingsControlsProbe
                 form.ProbeContext.Value=500_000;form.FlushPendingInput();
                 linked &= editor.Value==500_000;
                 presets=true;
-                foreach(var (caption,value) in new[]{("500K",500_000L),("1,000,000",1_000_000L),("1,050,000",1_050_000L)})
+                foreach(var (caption,value) in new[]{("500K",500_000L),("1M",1_000_000L),("1.05M",1_050_000L)})
                 {
                     form.Controls.OfType<Button>().Single(b=>b.Text==caption).PerformClick();
                     presets &= editor.Value==value && form.ProbeContext.Value==value;
@@ -46,8 +46,8 @@ internal static class SettingsControlsProbe
                 editor.Value=1_000_000;
                 return;
             }
-            using var screenshot=new Bitmap(form.ClientSize.Width-24,230,PixelFormat.Format32bppRgb);
-            using(var g=Graphics.FromImage(screenshot))g.CopyFromScreen(form.Left+12,form.Top+104,0,0,screenshot.Size);
+            using var screenshot=new Bitmap(form.ClientSize.Width,Math.Min(form.ClientSize.Height,form.ReadingPlateBounds.Top+260),PixelFormat.Format32bppRgb);
+            using(var g=Graphics.FromImage(screenshot))g.CopyFromScreen(form.Left,form.Top,0,0,screenshot.Size);
             screenshot.Save(Path.Combine(directory,"context-controls.png"));
             using var full=new Bitmap(form.ClientSize.Width,form.ClientSize.Height,PixelFormat.Format32bppRgb);
             using(var g=Graphics.FromImage(full))g.CopyFromScreen(form.PointToScreen(Point.Empty),Point.Empty,full.Size);

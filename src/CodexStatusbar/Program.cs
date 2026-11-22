@@ -126,6 +126,7 @@ internal static class Program
             return 0;
         }
         if(args.Length>=2 && args[0]=="--settings-controls-probe")return SettingsControlsProbe.Run(args[1]);
+        if(args.Length>=2 && args[0]=="--font-probe")return FontProbe.Run(args[1]);
         if(args.Length>=3 && args[0]=="--visible-route-watch")
         {
             using var monitor=new VisibleConversationMonitor(()=>long.Parse(args[1]),StateDatabase.ResolvePath());monitor.Start();
@@ -137,9 +138,50 @@ internal static class Program
         if(args.Length>=2 && args[0]=="--statistics-demo")return StatisticsPublicDemo.Run(args[1]);
         if(args.Length>=2 && args[0]=="--usage-record-json")
         {
-            var reader=new RolloutReader(args[1]);reader.Initialize();var usage=reader.State;
-            Console.WriteLine(JsonSerializer.Serialize(new{usage.TotalTokens,usage.InputTokens,usage.OutputTokens,
-                usage.CachedInputTokens,CachePercent=usage.InputTokens>0?100d*usage.CachedInputTokens/usage.InputTokens:(double?)null}));
+            Codex.SpeedMetrics.IGatewayTimingLookup? gw = args.Length >= 3
+                ? (args[2].Equals("none", StringComparison.OrdinalIgnoreCase) ? null : new Codex.SpeedMetrics.MagpieGatewayTimingStore(args[2]))
+                : Codex.SpeedMetrics.MagpieGatewayTimingStore.TryCreateDefault();
+            gw?.Refresh();
+            var analyzer = new Codex.SpeedMetrics.ResponseSpeedAnalyzer(preferModern: false, gatewayLookup: gw);
+            using (var stream = new FileStream(args[1], FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(stream, Encoding.UTF8))
+            {
+                while (reader.ReadLine() is string line) analyzer.ObserveLine(line);
+            }
+            var current = analyzer.CurrentSegment;
+            var totalTokens = current?.TotalTokens ?? analyzer.SessionTotalTokens;
+            var inputTokens = current?.InputTokens ?? analyzer.SessionInputTokens;
+            var outputTokens = current?.OutputTokens ?? analyzer.SessionOutputTokens;
+            var cachedTokens = current?.CachedInputTokens ?? analyzer.SessionCachedInputTokens;
+            var cacheKnownInput = current?.CacheKnownInputTokens ?? analyzer.SessionCacheKnownInputTokens;
+            var cachePercent = cacheKnownInput > 0 ? 100d * cachedTokens / cacheKnownInput : (double?)null;
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                TotalTokens = totalTokens,
+                InputTokens = inputTokens,
+                OutputTokens = outputTokens,
+                CachedInputTokens = cachedTokens,
+                CacheKnownInputTokens = cacheKnownInput,
+                CachePercent = cachePercent,
+                CurrentModel = current?.ServedModel ?? current?.Model,
+                CurrentRoute = current?.Route,
+                SegmentIndex = current?.Index ?? 0,
+                SegmentPending = analyzer.IsSegmentPending,
+                SessionTotals = new
+                {
+                    TotalTokens = analyzer.SessionTotalTokens,
+                    InputTokens = analyzer.SessionInputTokens,
+                    OutputTokens = analyzer.SessionOutputTokens,
+                    CachedInputTokens = analyzer.SessionCachedInputTokens,
+                    CacheKnownInputTokens = analyzer.SessionCacheKnownInputTokens,
+                    CachePercent = analyzer.SessionCacheKnownInputTokens > 0
+                        ? 100d * analyzer.SessionCachedInputTokens / analyzer.SessionCacheKnownInputTokens
+                        : (double?)null,
+                    CompletedResponses = analyzer.SessionCompletedResponses
+                },
+                Segments = analyzer.Segments,
+                SourceConflictCount = analyzer.SourceConflictCount
+            }));
             return 0;
         }
 
@@ -203,6 +245,11 @@ internal static class Program
         }
 
         if(args.Contains("--control-exit"))return LocalControl.RequestExit()?0:3;
+        if(args.Contains("--control-panel"))return LocalControl.Send(LocalControl.TogglePanelCommand)?0:3;
+        if(args.Contains("--control-settings"))return LocalControl.Send(LocalControl.OpenSettingsCommand)?0:3;
+        if(args.Contains("--control-close-settings"))return LocalControl.Send(LocalControl.CloseSettingsCommand)?0:3;
+        if(args.Contains("--control-stats"))return LocalControl.Send(LocalControl.OpenStatisticsCommand)?0:3;
+        if(args.Contains("--control-close-stats"))return LocalControl.Send(LocalControl.CloseStatisticsCommand)?0:3;
         if(args.Contains("--configure-ui"))
         {
             string? Value(string key){var index=Array.IndexOf(args,key);return index>=0&&index+1<args.Length?args[index+1]:null;}
@@ -378,9 +425,21 @@ internal sealed record TokenSnapshot(
     int CompletedResponseCount = 0,
     bool LiveEstimateConnected = false,
     bool ToolRunning = false,
-    string? Activity = null)
+    string? Activity = null,
+    double? LastResponseTps = null,
+    int GatewayMatchedResponseCount = 0,
+    int HiddenReasoningResponseCount = 0,
+    int BufferedBurstResponseCount = 0,
+    double? EndToEndAverageTps = null,
+    string TimingSource = "rollout",
+    long CacheKnownInputTokens = -1,
+    string? ActiveModel = null,
+    string? ActiveRoute = null,
+    int SegmentIndex = 0)
 {
-    public double? CacheHitPercent => MetricFormat.CacheHitPercent(InputTokens, CachedInputTokens);
+    public long EffectiveCacheInputDenominator => CacheKnownInputTokens >= 0 ? CacheKnownInputTokens : InputTokens;
+
+    public double? CacheHitPercent => MetricFormat.CacheHitPercent(EffectiveCacheInputDenominator, CachedInputTokens);
 
     /// <summary>Cache-hit rate as a plain number for the layout code (0 when undefined).</summary>
     public double CacheHitPercentValue => CacheHitPercent ?? 0d;
@@ -389,7 +448,7 @@ internal sealed record TokenSnapshot(
         ? 0
         : Math.Clamp(ContextUsedTokens * 100d / ContextWindowTokens, 0, 100);
 
-    public long UncachedInputTokens => Math.Max(0, InputTokens - CachedInputTokens);
+    public long UncachedInputTokens => Math.Max(0, EffectiveCacheInputDenominator - CachedInputTokens);
 
     public bool HasUsage => TotalTokens > 0 || InputTokens > 0 || OutputTokens > 0;
 }
@@ -1234,13 +1293,18 @@ internal sealed class TokenLogMonitor : IDisposable
         var total = state?.TotalTokens ?? 0;
         var input = state?.InputTokens ?? 0;
         var cached = state?.CachedInputTokens ?? 0;
+        var cacheKnownInput = state?.CacheKnownInputTokens ?? -1;
         var output = state?.OutputTokens ?? 0;
         var reasoning = state?.ReasoningOutputTokens ?? 0;
+        string? activeModel = state?.CurrentModel;
+        string? activeRoute = null;
+        var segmentIndex = 0;
         if (state is null && _stateRecord is not null)
         {
             // No rollout file yet (or unreadable): state_5.sqlite's official thread total is the only
             // number available, and it is a cumulative (input + output) total.
             total = _stateRecord.TokensUsed;
+            cacheKnownInput = 0;
             baselineSource = _stateRecord.TokensUsed > 0 ? "state-db" : baselineSource;
         }
 
@@ -1251,11 +1315,28 @@ internal sealed class TokenLogMonitor : IDisposable
             speed = readHistory && !string.IsNullOrEmpty(_readerPath)
                 ? _speedObserver.Read(threadId, _readerPath) : _speedObserver.ReadLive(threadId);
         }
-        // Desktop broadcasts official cumulative usage directly. Never replace a newer
-        // rollout total with a stale IPC snapshot, or estimate counters from rendered text.
-        if (_speedObserver.ReadUsage(threadId) is { } liveUsage && liveUsage.Total >= total)
+        var useSegmentLedger = speed is { HasSegmentUsage: true };
+        if (useSegmentLedger)
+        {
+            total = speed!.SegmentTotalTokens;
+            input = speed.SegmentInputTokens;
+            cached = speed.SegmentCachedInputTokens;
+            cacheKnownInput = speed.SegmentCacheKnownInputTokens;
+            output = speed.SegmentOutputTokens;
+            reasoning = speed.SegmentReasoningOutputTokens;
+            activeModel = speed.CurrentModel ?? activeModel;
+            activeRoute = speed.CurrentRoute;
+            segmentIndex = speed.SegmentIndex;
+            baselineSource = speed.SegmentIndex > 1 ? "segment-ledger" : (baselineSource == "none" ? "rollout-ledger" : baselineSource);
+        }
+
+        // Desktop IPC broadcasts whole-thread cumulative usage. Only supplement an unswitched single
+        // segment before its latest rollout line flushes; never overwrite a switched model/route segment.
+        var allowIpcThreadTotal = !useSegmentLedger || (speed!.SegmentIndex <= 1 && !speed.SegmentPending);
+        if (allowIpcThreadTotal && _speedObserver.ReadUsage(threadId) is { } liveUsage && liveUsage.Total >= total)
         {
             total = liveUsage.Total; input = liveUsage.Input; cached = liveUsage.Cached;
+            cacheKnownInput = liveUsage.Input;
             output = liveUsage.Output; reasoning = liveUsage.Reasoning; baselineSource = "ipc-usage";
         }
         var display = speed is null ? (Rate: (double?)null, Held: false) : _responseSpeedDisplay.Read(speed);
@@ -1315,7 +1396,14 @@ internal sealed class TokenLogMonitor : IDisposable
         var turnElapsedMs = state?.TurnElapsedMs(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         signature += "|elapsed:" + (turnElapsedMs / 1000)?.ToString(CultureInfo.InvariantCulture);
         signature += "|speed:" + tps?.ToString("0.0", CultureInfo.InvariantCulture) + ":" +
-            speed?.AverageTps?.ToString("0.000", CultureInfo.InvariantCulture) + ":" + speed?.AverageCoverage + ":held:" + display.Held + ":activity:" + speed?.Activity;
+            speed?.AverageTps?.ToString("0.000", CultureInfo.InvariantCulture) + ":" + speed?.AverageCoverage +
+            ":last:" + speed?.LastResponseTps?.ToString("0.0", CultureInfo.InvariantCulture) +
+            ":peak:" + speed?.PeakResponseTps?.ToString("0.0", CultureInfo.InvariantCulture) +
+            ":gw:" + speed?.GatewayMatchedResponses + ":hid:" + speed?.HiddenReasoningResponses +
+            ":bst:" + speed?.BufferedBurstResponses + ":src:" + speed?.TimingSource +
+            ":ttft:" + (speed?.LastTtftMs ?? speed?.AverageTtftMs)?.ToString("0", CultureInfo.InvariantCulture) +
+            ":held:" + display.Held + ":activity:" + speed?.Activity +
+            ":seg:" + segmentIndex + ":" + activeModel + ":" + activeRoute + ":cki:" + cacheKnownInput;
         if (signature == _cachedSignature && _lastSnapshot is not null)
         {
             return _lastSnapshot;
@@ -1366,14 +1454,35 @@ internal sealed class TokenLogMonitor : IDisposable
                 LastTurnTps = speed.AverageTps,
                 AverageTps = speed.AverageTps,
                 PeakTps = speed.PeakResponseTps,
+                TtftMs = speed.LastTtftMs ?? speed.AverageTtftMs ?? _lastSnapshot.TtftMs,
                 TurnGenerationMs = speed.TimedMilliseconds,
                 MergedModelElapsedMs = speed.TimedMilliseconds,
                 TpsHeld = display.Held,
-                TpsState = display.Held ? "completed-response-throughput-retained" : "completed-response-throughput",
+                TpsState = display.Held
+                    ? $"completed-response-throughput-retained({speed.TimingSource})"
+                    : $"completed-response-throughput({speed.TimingSource})",
                 TimedResponseCount = speed.TimedResponses,
                 CompletedResponseCount = speed.CompletedResponses,
                 LiveEstimateConnected = speed.LiveConnected,
-                ToolRunning = speed.ToolRunning, Activity = speed.Activity
+                ToolRunning = speed.ToolRunning, Activity = speed.Activity,
+                LastResponseTps = speed.LastResponseTps,
+                GatewayMatchedResponseCount = speed.GatewayMatchedResponses,
+                HiddenReasoningResponseCount = speed.HiddenReasoningResponses,
+                BufferedBurstResponseCount = speed.BufferedBurstResponses,
+                EndToEndAverageTps = speed.EndToEndAverageTps,
+                TimingSource = speed.TimingSource,
+                CacheKnownInputTokens = cacheKnownInput,
+                ActiveModel = activeModel,
+                ActiveRoute = activeRoute,
+                SegmentIndex = segmentIndex
+            };
+        else
+            _lastSnapshot = _lastSnapshot with
+            {
+                CacheKnownInputTokens = cacheKnownInput,
+                ActiveModel = activeModel,
+                ActiveRoute = activeRoute,
+                SegmentIndex = segmentIndex
             };
         return _lastSnapshot;
     }

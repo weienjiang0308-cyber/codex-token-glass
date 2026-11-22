@@ -41,8 +41,10 @@ internal sealed class SoftWindowEdge : Form
         {
             using var surface=SKSurface.Create(new SKImageInfo(result.Width,result.Height,SKColorType.Bgra8888,SKAlphaType.Premul),bits.Scan0,bits.Stride);
             using var erase=new SKPaint{BlendMode=SKBlendMode.DstOut,Color=SKColors.White,IsAntialias=true};
-            surface.Canvas.DrawRoundRect(new SKRect(thickness,thickness,result.Width-thickness,result.Height-thickness),
-                Math.Max(0,radius-thickness),Math.Max(0,radius-thickness),erase);
+            using var innerPath=Ios18Palette.CreateContinuousSkPath(
+                new SKRect(thickness,thickness,result.Width-thickness,result.Height-thickness),
+                Math.Max(0,radius-thickness));
+            surface.Canvas.DrawPath(innerPath,erase);
             surface.Canvas.Flush();
         }
         finally{result.UnlockBits(bits);}

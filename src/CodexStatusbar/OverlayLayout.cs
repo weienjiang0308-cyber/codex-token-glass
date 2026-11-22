@@ -80,13 +80,19 @@ internal static class OverlayLayoutCalculator
     private const int TitleBarCollapsedWidthDip = 330;
     private const int PrimaryOnlyWidthDip = 116;
     private const int CollapsedHeightDip = 34;
-    private const int ExpandedWidthDip = 420;
+    internal const int ExpandedWidthDip = 500;
+    internal const int SheetHeightDip = 932;
+    /// <summary>Navigation row shared by the panel, settings and statistics sheets. Its centre line is
+    /// the sheets' 40 DIP corner radius, so it runs through the centre of the top corners, which is
+    /// where the panel's settings button sits. The pushed sheets' first card starts at 92.</summary>
+    internal const int NavCenterYDip = 40;
+    internal const int FirstCardTopDip = 92;
     private const int CapsulePanelGapDip = 6;
     private const int CaptionSafetyGapDip = 8;
     private const int TitleLeftReserveDip = 160;
-    private const int PanelChromeHeightDip = 244;
-    private const int NormalRowHeightDip = 28;
-    private const int MinimumRowHeightDip = 24;
+    internal const int PanelChromeHeightDip = 432;
+    internal const int NormalRowHeightDip = 50;
+    private const int MinimumRowHeightDip = 36;
 
     private const int LegacyOutsideGapDip = 10;
     private const int LegacyInsideMarginDip = 18;
@@ -862,30 +868,21 @@ internal static class OverlayLayoutCalculator
         var chromeHeight = ScaleOverlayDip(PanelChromeHeightDip, dpi, scalePercent);
         var normalRowHeight = ScaleOverlayDip(NormalRowHeightDip, dpi, scalePercent);
         var minimumRowHeight = ScaleOverlayDip(MinimumRowHeightDip, dpi, scalePercent);
-        rowHeight = normalRowHeight;
-        panelHeight = chromeHeight + (rowCount * rowHeight);
-        if (panelHeight <= availableHeight)
-        {
-            return true;
-        }
-
-        if (rowCount == 0)
+        var sheetHeight = ScaleOverlayDip(SheetHeightDip, dpi, scalePercent);
+        var targetHeight = Math.Min(sheetHeight, availableHeight);
+        if (targetHeight < chromeHeight + (rowCount * minimumRowHeight))
         {
             rowHeight = 0;
             panelHeight = 0;
             return false;
         }
 
-        rowHeight = (availableHeight - chromeHeight) / rowCount;
-        if (rowHeight < minimumRowHeight)
-        {
-            rowHeight = 0;
-            panelHeight = 0;
-            return false;
-        }
-
-        rowHeight = Math.Min(rowHeight, normalRowHeight);
-        panelHeight = chromeHeight + (rowCount * rowHeight);
+        rowHeight = rowCount == 0
+            ? normalRowHeight
+            : Math.Clamp((targetHeight - chromeHeight) / rowCount, minimumRowHeight, normalRowHeight);
+        panelHeight = availableHeight >= sheetHeight
+            ? Math.Max(sheetHeight, chromeHeight + (rowCount * rowHeight))
+            : chromeHeight + (rowCount * rowHeight);
         return panelHeight <= availableHeight;
     }
 
@@ -900,9 +897,7 @@ internal static class OverlayLayoutCalculator
         var below = workingArea.Bottom - capsule.Bottom - gap;
         var above = capsule.Top - gap - workingArea.Top;
         var rowCount = Math.Max(0, request.ExpandedRowCount);
-        var normalPanelHeight =
-            ScaleOverlayDip(PanelChromeHeightDip, dpi, scalePercent) +
-            (rowCount * ScaleOverlayDip(NormalRowHeightDip, dpi, scalePercent));
+        var normalPanelHeight = ScaleOverlayDip(SheetHeightDip, dpi, scalePercent);
         if (below >= normalPanelHeight)
         {
             return ExpansionDirection.Down;

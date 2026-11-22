@@ -549,10 +549,16 @@ internal sealed class DebugDiagnostics
                 : "none");
         Append(builder, "First item start:", FormatTimestamp(snapshot.FirstItemStartMs));
         Append(builder, "Last item end:", FormatTimestamp(snapshot.LastItemEndMs));
-        Append(builder, "Live visible-text estimate TPS:", snapshot.Tps?.ToString("0.0", CultureInfo.InvariantCulture) ?? "--");
+        Append(builder, "Displayed throughput TPS:", snapshot.Tps?.ToString("0.0", CultureInfo.InvariantCulture) ?? "--");
         Append(builder, "Completed-response average TPS:", MetricFormat.FormatTpsFloat(snapshot.AverageTps));
+        Append(builder, "Last valid response TPS:", MetricFormat.FormatTpsFloat(snapshot.LastResponseTps));
+        Append(builder, "Session peak TPS:", MetricFormat.FormatTpsFloat(snapshot.PeakTps));
+        Append(builder, "End-to-end TPS (gateway):", MetricFormat.FormatTpsFloat(snapshot.EndToEndAverageTps));
         Append(builder, "Timed response coverage:", $"{snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount}");
-        Append(builder, "Live estimate source:", snapshot.LiveEstimateConnected ? "Codex IPC; o200k_base; 2-second window" : "unavailable");
+        Append(builder, "Timing source:", snapshot.TimingSource);
+        Append(builder, "Gateway matched responses:", snapshot.GatewayMatchedResponseCount.ToString(CultureInfo.InvariantCulture));
+        Append(builder, "Excluded hidden reasoning:", snapshot.HiddenReasoningResponseCount.ToString(CultureInfo.InvariantCulture));
+        Append(builder, "Excluded buffered bursts:", snapshot.BufferedBurstResponseCount.ToString(CultureInfo.InvariantCulture));
         Append(
             builder,
             "TTFT ms:",

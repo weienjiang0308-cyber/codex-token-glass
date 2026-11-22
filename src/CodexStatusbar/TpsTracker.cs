@@ -682,6 +682,11 @@ internal sealed class RolloutStreamState
 
     public bool HasCumulativeUsage { get; set; }
 
+    /// <summary>Input token denominator for entries with known cache counts (-1 means fallback to InputTokens).</summary>
+    public long CacheKnownInputTokens { get; set; } = -1;
+
+    public string? CurrentModel { get; set; }
+
     /// <summary>True when at least one cumulative reading came from the rollout itself.</summary>
     public bool HasRolloutUsage { get; set; }
 
@@ -763,6 +768,8 @@ internal sealed class RolloutStreamState
                     ObserveEventMessage(root);
                     break;
                 case "turn_context":
+                    ObserveTurnContext(root);
+                    break;
                 case "response_item":
                 case "world_state":
                 case "compacted":
@@ -784,6 +791,19 @@ internal sealed class RolloutStreamState
         SessionMetaSeen = true;
         SessionMetaId = GetString(payload, "id") ?? SessionMetaId;
         SessionMetaOriginator = GetString(payload, "originator") ?? SessionMetaOriginator;
+    }
+
+    private void ObserveTurnContext(JsonElement root)
+    {
+        if (!root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+        var model = GetString(payload, "model");
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            CurrentModel = model;
+        }
     }
 
     private void ObserveEventMessage(JsonElement root)
@@ -1008,6 +1028,7 @@ internal sealed class RolloutStreamState
         }
 
         var cached = GetLong(usage, "cached_input_tokens");
+        var hasCached = TryGetLong(usage, "cached_input_tokens") is not null;
         if (carrier == "token_usage_record") _hasModernCumulative = true;
 
         // Every accepted carrier is CUMULATIVE. Legacy mirrors cannot overwrite modern usage.
@@ -1033,6 +1054,7 @@ internal sealed class RolloutStreamState
         TotalTokens = total;
         InputTokens = input;
         CachedInputTokens = cached;
+        CacheKnownInputTokens = hasCached ? input : 0;
         OutputTokens = output;
         ReasoningOutputTokens = GetLong(usage, "reasoning_output_tokens");
         HasCumulativeUsage = true;
@@ -1048,10 +1070,13 @@ internal sealed class RolloutStreamState
             return;
         }
 
+        // state_5.sqlite stores only the thread total; never fabricate input/cache breakdowns
+        // or display an unknown cache ratio as 0%.
         TotalTokens = tokensUsed;
         OutputTokens = 0;
-        InputTokens = tokensUsed;
+        InputTokens = 0;
         CachedInputTokens = 0;
+        CacheKnownInputTokens = 0;
         HasCumulativeUsage = true;
     }
 

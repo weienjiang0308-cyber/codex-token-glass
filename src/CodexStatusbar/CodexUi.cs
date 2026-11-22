@@ -91,6 +91,31 @@ internal static class CodexUi
         return new Font(name,size,semibold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Point);
     }
 
+    /// <summary>iOS-style UI font: Inter for Latin and digits (closest open substitute for SF Pro);
+    /// AppleText falls back to Noto Sans SC / Microsoft YaHei UI for CJK glyphs.</summary>
+    public static Font UiFont(float size, bool semibold = false)
+    {
+        var families = ModernFonts.Families;
+        var family = semibold
+            ? families.FirstOrDefault(f => f.Name.Contains("Inter", StringComparison.OrdinalIgnoreCase) && f.Name.Contains("Semi", StringComparison.OrdinalIgnoreCase))
+            : families.FirstOrDefault(f => f.Name.Equals("Inter", StringComparison.OrdinalIgnoreCase));
+        if (family is not null)
+        {
+            var style = family.IsStyleAvailable(FontStyle.Regular) ? FontStyle.Regular : FontStyle.Bold;
+            return new Font(family, size, style, GraphicsUnit.Point);
+        }
+        return Font(size, semibold);
+    }
+
+    /// <summary>Bold UI font for iOS large titles (34 pt Bold).</summary>
+    public static Font UiBoldFont(float size)
+    {
+        var family = ModernFonts.Families.FirstOrDefault(f => f.Name.Equals("Inter", StringComparison.OrdinalIgnoreCase));
+        return family is not null && family.IsStyleAvailable(FontStyle.Bold)
+            ? new Font(family, size, FontStyle.Bold, GraphicsUnit.Point)
+            : UiFont(size, semibold: true);
+    }
+
     public static Font FontForText(string text, float size, bool semibold = false)
     {
         // Restore the original Windows UI and bundled CJK font selection.

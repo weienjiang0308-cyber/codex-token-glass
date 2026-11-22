@@ -21,14 +21,32 @@ internal sealed record OverlayPresentation(
     string? SpeedExplanation = null,
     bool LiveReadingHeld = false,
     string? ConversationTitle = null,
-    string? TimingCoverage = null)
+    string? TimingCoverage = null,
+    string? LastResponseText = null,
+    string? TimingSourceText = null)
 {
     public IReadOnlyList<OverlayMetric> DetailRows
     {
         get
         {
-            var rows = ExpandedRows.Where(r => r.Field is not DisplayField.PeakSpeed and not DisplayField.AverageSpeed and not DisplayField.Tps).ToList();
+            var rows = ExpandedRows.Where(r => r.Field is not DisplayField.PeakSpeed and not DisplayField.AverageSpeed and not DisplayField.Tps and not DisplayField.None).ToList();
             if (Secondary.Field == DisplayField.Total && rows.All(r => r.Field != DisplayField.Total)) rows.Insert(0, Secondary);
+            return rows;
+        }
+    }
+
+    /// <summary>Rows drawn in the first-level panel. "Used / window" and "context used" describe one
+    /// quantity, so they share a single row: "451.7K / 997.5K · 45%".</summary>
+    public IReadOnlyList<OverlayMetric> PanelRows
+    {
+        get
+        {
+            var rows = DetailRows.ToList();
+            var context = rows.FindIndex(r => r.Field == DisplayField.Context);
+            var percent = rows.FindIndex(r => r.Field == DisplayField.ContextPercent);
+            if (context < 0 || percent < 0) return rows;
+            rows[context] = rows[context] with { Value = rows[context].Value + " · " + rows[percent].Value };
+            rows.RemoveAt(percent);
             return rows;
         }
     }
@@ -121,6 +139,15 @@ internal static class OverlayPresentationBuilder
         ArgumentNullException.ThrowIfNull(snapshot);
         ValidateHighlightedFields(primaryField, secondaryField);
         var contextPercent = Math.Clamp(snapshot.ContextPercent, 0, 100);
+        var timingSourceText = snapshot.TimingSource switch
+        {
+            "gateway" => CodexUi.T("网关精确计时", "Gateway timing"),
+            "hybrid" => CodexUi.T("网关与日志计时", "Hybrid timing"),
+            _ => null
+        };
+        var lastResponseText = MetricFormat.IsUsableTps(snapshot.LastResponseTps)
+            ? MetricFormat.FormatTpsFloat(snapshot.LastResponseTps) + " tok/s"
+            : null;
         return new OverlayPresentation(
             CreateMetric(snapshot, primaryField, contextPercent),
             CreateMetric(snapshot, secondaryField, contextPercent),
@@ -136,13 +163,14 @@ internal static class OverlayPresentationBuilder
             BuildCapsuleVariants(snapshot),
             CodexUi.T($"输出速度 · 官方输出 / 生成时长 · 已计时 {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} 响应",
                 $"Throughput · output / generation time · {snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount} timed responses"),
-            snapshot.TpsHeld, snapshot.Title, $"{snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount}");
+            snapshot.TpsHeld, snapshot.Title, $"{snapshot.TimedResponseCount}/{snapshot.CompletedResponseCount}",
+            lastResponseText, timingSourceText);
     }
 
     public static string FormatTokenCount(long value) => value switch
     {
         >= 999_950 => (value / 1_000_000d).ToString("0.00", CultureInfo.InvariantCulture) + "M",
-        >= 1_000 => (value / 1_000d).ToString("0.0", CultureInfo.InvariantCulture) + "k",
+        >= 1_000 => (value / 1_000d).ToString("0.0", CultureInfo.InvariantCulture) + "K",
         _ => value.ToString("N0", CultureInfo.InvariantCulture)
     };
 
@@ -185,7 +213,7 @@ internal static class OverlayPresentationBuilder
             DisplayField.Tps => "已完成响应输出速度",
             DisplayField.TurnDuration => "本轮任务用时",
             DisplayField.ModelTime => "本轮模型生成用时",
-            DisplayField.FirstTokenTime => "首 token 等待时间",
+            DisplayField.FirstTokenTime => "首 Token 等待时间",
             DisplayField.PeakSpeed => "本轮峰值响应速度",
             DisplayField.AverageSpeed => "已计时响应平均速度",
             _ => throw new ArgumentOutOfRangeException(nameof(field), field, "不支持的展示字段。")
@@ -205,7 +233,7 @@ internal static class OverlayPresentationBuilder
             parts.Add($"{rate.ToString("0.0", CultureInfo.InvariantCulture)} tok/s");
         if (snapshot.HasUsage) parts.Add("Tokens " + MetricFormat.CompactTokens(
             snapshot.InputTokens + snapshot.OutputTokens > 0 ? snapshot.InputTokens + snapshot.OutputTokens : snapshot.TotalTokens));
-        if (snapshot.InputTokens > 0) parts.Add("Cache hit " + MetricFormat.FormatCachePercentCompact(snapshot.InputTokens, snapshot.CachedInputTokens));
+        if (snapshot.EffectiveCacheInputDenominator > 0) parts.Add("Cache hit " + MetricFormat.FormatCachePercentCompact(snapshot.EffectiveCacheInputDenominator, snapshot.CachedInputTokens));
         var status = snapshot.Activity switch
         {
             "command" => "Command", "searching" => "Searching", "tool" => "Using tools",
@@ -257,14 +285,15 @@ internal static class OverlayPresentationBuilder
         double contextPercent)
     {
         var labels = GetLabels(field);
+        var cacheUnknownOnly = snapshot.InputTokens > 0 && snapshot.EffectiveCacheInputDenominator == 0;
         var value = field switch
         {
             DisplayField.Total => ExactTokens(snapshot.TotalTokens),
             DisplayField.Input => ExactTokens(snapshot.InputTokens),
             DisplayField.Output => ExactTokens(snapshot.OutputTokens),
-            DisplayField.CacheHit => ExactTokens(snapshot.CachedInputTokens),
+            DisplayField.CacheHit => cacheUnknownOnly ? NoValue : ExactTokens(snapshot.CachedInputTokens),
             DisplayField.CacheHitRate => snapshot.CacheHitPercent is double rate ? $"{rate:0.00}%" : NoValue,
-            DisplayField.CacheMiss => ExactTokens(snapshot.UncachedInputTokens),
+            DisplayField.CacheMiss => cacheUnknownOnly ? NoValue : ExactTokens(snapshot.UncachedInputTokens),
             DisplayField.Context => $"{FormatTokenCount(snapshot.ContextUsedTokens)} / {FormatTokenCount(snapshot.ContextWindowTokens)}",
             DisplayField.ContextPercent => $"{contextPercent:0}%",
             DisplayField.Reasoning => ExactTokens(snapshot.ReasoningOutputTokens),
@@ -288,18 +317,18 @@ internal static class OverlayPresentationBuilder
             return field switch
             {
                 DisplayField.Total => ("Total", "Total tokens"),
-                DisplayField.Input => ("In", "Input tokens"),
-                DisplayField.Output => ("Out", "Output tokens"),
+                DisplayField.Input => ("In", "Input"),
+                DisplayField.Output => ("Out", "Output"),
                 DisplayField.CacheHit => ("Cached", "Cached input"),
                 DisplayField.CacheHitRate => ("Cache", "Cache hit rate"),
                 DisplayField.CacheMiss => ("Uncached", "Uncached input"),
-                DisplayField.Context => ("Context", "Latest call / window"),
+                DisplayField.Context => ("Context", "Used / window"),
                 DisplayField.ContextPercent => ("Context", "Context used"),
                 DisplayField.Reasoning => ("Reasoning", "Reasoning tokens"),
                 DisplayField.Thread => ("Thread", "Conversation"),
                 DisplayField.Tps => ("TPS", "Completed-response throughput"),
-                DisplayField.TurnDuration => ("Elapsed", "Task elapsed"),
-                DisplayField.ModelTime => ("Timed", "Timed generation"),
+                DisplayField.TurnDuration => ("Elapsed", "Turn elapsed"),
+                DisplayField.ModelTime => ("Timed", "Generation time"),
                 DisplayField.FirstTokenTime => ("First token", "Time to first token"),
                 DisplayField.PeakSpeed => ("Peak", "Peak response speed"),
                 DisplayField.AverageSpeed => ("Average", "Completed-response average"),
@@ -309,19 +338,19 @@ internal static class OverlayPresentationBuilder
         return field switch
         {
             DisplayField.Total => ("总", "总 Token"),
-            DisplayField.Input => ("入", "累计输入"),
-            DisplayField.Output => ("出", "累计输出"),
-            DisplayField.CacheHit => ("命中", "累计缓存输入"),
+            DisplayField.Input => ("入", "输入"),
+            DisplayField.Output => ("出", "输出"),
+            DisplayField.CacheHit => ("命中", "缓存输入"),
             DisplayField.CacheHitRate => ("命中率", "缓存命中率"),
-            DisplayField.CacheMiss => ("未中", "累计未缓存输入"),
-            DisplayField.Context => ("上下文", "最近调用 / 可用窗口"),
+            DisplayField.CacheMiss => ("未中", "未缓存输入"),
+            DisplayField.Context => ("上下文", "已用 / 窗口"),
             DisplayField.ContextPercent => ("上下文", "上下文占用"),
             DisplayField.Reasoning => ("推理", "推理输出"),
             DisplayField.Thread => ("会话", "会话"),
             DisplayField.Tps => ("输出速度", "已完成响应输出速度"),
-            DisplayField.TurnDuration => ("用时", "本轮任务用时"),
-            DisplayField.ModelTime => ("计时", "已计时生成时长"),
-            DisplayField.FirstTokenTime => ("首字", "首 token 等待"),
+            DisplayField.TurnDuration => ("用时", "本轮用时"),
+            DisplayField.ModelTime => ("计时", "生成时长"),
+            DisplayField.FirstTokenTime => ("首字", "首 Token 延迟"),
             DisplayField.PeakSpeed => ("峰值", "本轮峰值响应速度"),
             DisplayField.AverageSpeed => ("平均", "已计时响应平均速度"),
             _ => throw new ArgumentOutOfRangeException(nameof(field), field, "不支持的展示字段。")

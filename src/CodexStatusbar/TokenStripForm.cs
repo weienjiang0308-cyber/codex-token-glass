@@ -63,7 +63,7 @@ internal readonly record struct OverlayRenderMetrics(
             ScaleFont(16d),
             ScaleFont(18d),
             Scale(10),
-            Scale(32),
+            Scale(40),
             Scale(10),
             Scale(8),
             Scale(14),
@@ -137,16 +137,12 @@ internal sealed class TokenStripForm : Form
     private bool _textShadow;
     private bool _settingsHovered;
     private bool _settingsPressed;
-    private bool _statisticsHovered;
-    private bool _statisticsPressed;
     private Bitmap? _settingsIcon;
     private Color _settingsIconColor;
-    private readonly ToolTip _settingsTip = new() { ShowAlways=true };
     private bool _backdropEnabled;
     private (Color Tint, bool Enabled)? _backdropRequest;
     private readonly LiquidBackdropRenderer _liquid = new();
     private readonly UiFrameClock _liquidTimer = new();
-    private bool _liquidFrame;
     private bool _glassPressed;
     private Point _glassGrasp;
     private int _capsuleVariantIndex;
@@ -237,13 +233,22 @@ internal sealed class TokenStripForm : Form
 
     public event EventHandler? CapsuleClicked;
     public event EventHandler? SettingsRequested;
-    public event EventHandler? StatisticsRequested;
     public event EventHandler<OverlayEditPreviewEventArgs>? EditPreviewChanged;
     public event EventHandler<OverlayEditPreviewEventArgs>? EditGestureCompleted;
     public event EventHandler? EditSaveRequested;
     public event EventHandler? EditCancelRequested;
 
     public OverlayLayoutResult? CurrentLayout { get; private set; }
+
+    internal Rectangle? PanelScreenBounds => CurrentLayout is { PanelBounds.IsEmpty: false } layout
+        ? new Rectangle(layout.WindowBounds.X + layout.PanelBounds.X, layout.WindowBounds.Y + layout.PanelBounds.Y,
+            layout.PanelBounds.Width, layout.PanelBounds.Height)
+        : null;
+
+    internal Rectangle? CapsuleScreenBounds => CurrentLayout is { CapsuleBounds.IsEmpty: false } layout
+        ? new Rectangle(layout.WindowBounds.X + layout.CapsuleBounds.X, layout.WindowBounds.Y + layout.CapsuleBounds.Y,
+            layout.CapsuleBounds.Width, layout.CapsuleBounds.Height)
+        : null;
     public bool IsEditMode { get; private set; }
     internal OverlayPresentation CurrentPresentation => _presentation;
     internal OverlayThemePalette CurrentThemePalette => _palette;
@@ -536,7 +541,7 @@ internal sealed class TokenStripForm : Form
         else if (layout.State != OverlayVisualState.Expanded)
         {
             _liquidTimer.Stop(); _liquid.Clear(); _glassPressed = false;
-            _settingsPressed=false;_settingsHovered=false;_settingsTip.Hide(this);
+            _settingsPressed=false;_settingsHovered=false;
         }
         CurrentLayout = layout;
         SetBounds(
@@ -553,11 +558,10 @@ internal sealed class TokenStripForm : Form
     private void UpdateBackdrop()
     {
         if (!IsHandleCreated) return;
-        var desired = CurrentLayout?.State == OverlayVisualState.Expanded && !_liquid.Ready;
-        var request = (_palette.Background, desired);
+        var request = (_palette.Background, false);
         if (_backdropRequest == request) return;
         _backdropRequest = request;
-        _backdropEnabled = DesktopMaterial.Apply(Handle, _palette.Background, desired);
+        _backdropEnabled = DesktopMaterial.Apply(Handle, _palette.Background, false);
     }
 
     /// <summary>
@@ -795,10 +799,7 @@ internal sealed class TokenStripForm : Form
         // Fonts are specified in points, and GDI+ resolves those against the Graphics DPI. The bitmap
         // must therefore carry the host DPI, or 150% scaling would render 100%-sized text.
         bitmap.SetResolution(dpi, dpi);
-        var statsBounds = StatisticsButtonBounds;
-        if (!statsBounds.IsEmpty) _liquid.Control(7001, statsBounds, statsBounds.Height / 2f, _statisticsHovered, _statisticsPressed);
-        _liquidFrame = _liquid.RenderInto(bitmap, _palette.Background.GetBrightness() < .5);
-        if (!_liquidFrame && CurrentLayout?.State == OverlayVisualState.Expanded) UpdateBackdrop();
+        if (CurrentLayout?.State == OverlayVisualState.Expanded) UpdateBackdrop();
         using var graphics = Graphics.FromImage(bitmap);
         ConfigureSurfaceGraphics(graphics);
         // Per-pixel layered hit testing needs nonzero alpha across the clickable strip, including
@@ -808,7 +809,10 @@ internal sealed class TokenStripForm : Form
             using var hitFill = new SolidBrush(Color.FromArgb(1,_palette.Background));
             graphics.FillRectangle(hitFill,hitLayout.CapsuleBounds.ToRectangle());
         }
-        RenderSurface(graphics, size);
+        using (AppleText.Composite(bitmap))
+        {
+            RenderSurface(graphics, size);
+        }
         return bitmap;
     }
 
@@ -875,11 +879,6 @@ internal sealed class TokenStripForm : Form
     protected override void OnMouseDown(MouseEventArgs eventArgs)
     {
         base.OnMouseDown(eventArgs);
-        if (!IsEditMode && eventArgs.Button == MouseButtons.Left && StatisticsButtonBounds.Contains(eventArgs.Location))
-        {
-            _statisticsPressed = true; Capture = true; InvalidateSurface(); _liquidTimer.Start();
-            return;
-        }
         if (!IsEditMode && eventArgs.Button==MouseButtons.Left && SettingsButtonBounds.Contains(eventArgs.Location))
         {
             _settingsPressed=true;_liquid.ButtonState(true,true);_liquidTimer.Start();Capture=true;
@@ -905,16 +904,11 @@ internal sealed class TokenStripForm : Form
             _liquidTimer.Start();
         }
         var hovering = SettingsButtonBounds.Contains(eventArgs.Location);
-        var statisticsHovering = StatisticsButtonBounds.Contains(eventArgs.Location);
-        if (statisticsHovering != _statisticsHovered)
-        { _statisticsHovered = statisticsHovering; InvalidateSurface(); _liquidTimer.Start(); }
         if (hovering != _settingsHovered)
         {
             _settingsHovered = hovering;_liquid.ButtonState(hovering,_settingsPressed);_liquidTimer.Start();InvalidateSurface();
-            if(hovering) _settingsTip.Show(CodexUi.T("设置","Settings"),this,SettingsButtonBounds.Left-8,SettingsButtonBounds.Bottom+8,1200);
-            else _settingsTip.Hide(this);
         }
-        if (!IsEditMode) Cursor = hovering || StatisticsButtonBounds.Contains(eventArgs.Location) || CurrentLayout?.CapsuleBounds.Contains(eventArgs.X, eventArgs.Y) == true
+        if (!IsEditMode) Cursor = hovering || CurrentLayout?.CapsuleBounds.Contains(eventArgs.X, eventArgs.Y) == true
             ? Cursors.Hand : Cursors.Default;
         HandleMouseMove(eventArgs.Location, PointToScreen(eventArgs.Location));
     }
@@ -922,7 +916,6 @@ internal sealed class TokenStripForm : Form
     protected override void OnMouseUp(MouseEventArgs eventArgs)
     {
         base.OnMouseUp(eventArgs);
-        if (_statisticsPressed) { _statisticsPressed = false; Capture = false; InvalidateSurface(); _liquidTimer.Start(); }
         if (_settingsPressed) {_settingsPressed=false;Capture=false;_liquid.ButtonState(_settingsHovered,false);_liquidTimer.Start();}
         if (_glassPressed)
         {
@@ -937,7 +930,6 @@ internal sealed class TokenStripForm : Form
     protected override void OnMouseCaptureChanged(EventArgs eventArgs)
     {
         base.OnMouseCaptureChanged(eventArgs);
-        if (!Capture && _statisticsPressed) { _statisticsPressed = false; InvalidateSurface(); }
         if(!Capture && _settingsPressed)
         {_settingsPressed=false;_liquid.ButtonState(_settingsHovered,false);_liquidTimer.Start();}
         if (!Capture && _glassPressed)
@@ -1030,11 +1022,6 @@ internal sealed class TokenStripForm : Form
             return;
         }
 
-        if (!IsEditMode && StatisticsButtonBounds.Contains(clientPoint))
-        {
-            StatisticsRequested?.Invoke(this, EventArgs.Empty);
-            return;
-        }
         if (!IsEditMode && SettingsButtonBounds.Contains(clientPoint))
         {
             SettingsRequested?.Invoke(this, EventArgs.Empty);
@@ -1431,157 +1418,206 @@ internal sealed class TokenStripForm : Form
         OverlayRenderMetrics metrics, OverlayRenderDecorationState decorations)
     {
         var layout=CurrentLayout!;
-        using var panelLabelFont=new Font(_typeface.Family,10.5f*layout.ScalePercent/100f);
-        using var panelValueFont=new Font(_typeface.Family,10.5f*layout.ScalePercent/100f);
-        using var panelButtonFont=new Font(_typeface.Family,10f*layout.ScalePercent/100f);
-        using var panelHeaderFont=new Font(_typeface.Family,15f*layout.ScalePercent/100f,FontStyle.Bold);
+        using var panelLabelFont=CodexUi.UiFont(12.75f*layout.ScalePercent/100f);
+        using var panelValueFont=CodexUi.UiFont(12.75f*layout.ScalePercent/100f);
+        using var panelHeaderFont=CodexUi.UiFont(12.75f*layout.ScalePercent/100f,semibold:true);
         headerFont=panelHeaderFont;
         labelFont=panelLabelFont;valueFont=panelValueFont;
         var bounds=layout.PanelBounds.ToRectangle();
         var unit=layout.Dpi/96d*layout.ScalePercent/100d;
         int D(int n)=>(int)Math.Round(n*unit);
-        if(!_liquidFrame)
-        {
-            using var shape=CreateRoundedRectanglePath(bounds,metrics.PanelRadius);
-            using var fill=new SolidBrush(Color.FromArgb(_backdropEnabled?165:255,_palette.Background));
-            graphics.FillPath(fill,shape);
-        }
-        var left=bounds.Left+D(24);var width=bounds.Width-D(48);
-        DrawAlignedText(graphics,string.IsNullOrWhiteSpace(_presentation.ConversationTitle) ? CodexUi.T("Codex 用量","Codex usage") : _presentation.ConversationTitle,headerFont,
-            new Rectangle(left,bounds.Top+D(16),width-D(112),D(32)),_palette.Value,TextAlignment.Near,false);
-        DrawAlignedText(graphics,CodexUi.T("本对话概览 · 响应完成后更新","Conversation · completed responses"),labelFont,
-            new Rectangle(left,bounds.Top+D(52),width,D(24)),_palette.Label,TextAlignment.Near,false);
-        DrawSettingsGlyph(graphics,SettingsButtonBounds);
-        if (!_liquidFrame)
-        {
-            using var shape = CreateRoundedRectanglePath(StatisticsButtonBounds, D(22));
-            using var fill = new SolidBrush(Color.FromArgb(_statisticsHovered ? 200 : 150, _palette.Background));
-            graphics.FillPath(fill, shape);
-            using var outline = new Pen(Color.FromArgb(40, _palette.Value), 1);
-            graphics.DrawPath(outline, shape);
-        }
-        DrawAlignedText(graphics,CodexUi.T("统计", "Stats"),panelButtonFont,StatisticsButtonBounds,_palette.Value,TextAlignment.Center,false);
+        var ios = Ios18Palette.FromOverlay(_palette);
+        var panelRadius = metrics.PanelRadius;
+        var inset = D(20);
+        var cardRadius = Math.Max(D(12), panelRadius - inset);
+        Ios18Palette.FillRoundedCard(graphics, bounds, panelRadius, ios.WindowSurface, ios.WindowBorder, Math.Max(1f, (float)unit));
 
-        var heroWidth=(width-D(20))/2;
-        DrawHero(graphics,_presentation.Primary,new Rectangle(left,bounds.Top+D(82),heroWidth,D(66)),labelFont,layout.ScalePercent);
-        DrawHero(graphics,_presentation.Secondary,new Rectangle(left+heroWidth+D(20),bounds.Top+D(82),heroWidth,D(66)),labelFont,layout.ScalePercent);
+        var left=bounds.Left+inset;var width=bounds.Width-inset*2;
+        var contentLeft=left+D(16);var contentWidth=width-D(32);
+        using var sectionFont=CodexUi.UiFont(9.75f*layout.ScalePercent/100f);
+        // The settings glyph is centred on the centre of the panel's top-right corner arc, so it is
+        // concentric with the corner: the same distance from the top edge, the right edge and the arc.
+        // "Done" on the pushed pages is centred on the same point, so nothing shifts between pages.
+        // The tiles start as far below the glyph as the glyph is from the top. The pushed pages centre
+        // their title between a button on each side; the root has one button, so its title balances it
+        // from the left on the 36 DIP text margin: a wordmark in a comic display face, as tall as the
+        // glyph, on its centre line.
+        var navCenter=bounds.Top+D(OverlayLayoutCalculator.NavCenterYDip);
+        var rootTitle=CodexUi.T(RootTitleChinese,RootTitleEnglish);
+        var titleBounds=new Rectangle(contentLeft,navCenter-D(22),contentWidth-D(SettingsGlyphDip+12),D(44));
+        if(!AppleText.DrawDisplay(graphics,rootTitle,RootTitleFontFile,(float)(RootTitlePixels*unit),titleBounds,ios.TextPrimary))
+        {
+            using var navTitle=CodexUi.UiBoldFont(12.75f*layout.ScalePercent/100f);
+            DrawAlignedText(graphics,rootTitle,navTitle,titleBounds,ios.TextPrimary,TextAlignment.Near,false);
+        }
+        DrawSettingsGlyph(graphics,SettingsButtonBounds,unit);
 
-        var peak=_presentation.ExpandedRows.FirstOrDefault(r=>r.Field==DisplayField.PeakSpeed);
-        var meta = peak is null ? "" : CodexUi.T("峰值 ","Peak ") + peak.Value;
-        if (_presentation.TimingCoverage is { } coverage)
-            meta += (meta.Length > 0 ? "   ·   " : "") + CodexUi.T("已计时 ","Timed ") + coverage;
-        DrawAlignedText(graphics,meta,labelFont,new Rectangle(left,bounds.Top+D(164),width,D(24)),
-            _palette.Label,TextAlignment.Near,false);
-        var rows=_presentation.DetailRows.ToList();
+        void Section(string text,int y,bool caps=true)=>DrawAlignedText(graphics,CodexUi.English&&caps?text.ToUpperInvariant():text,sectionFont,
+            new Rectangle(contentLeft,y,contentWidth,D(18)),ios.TextSecondary,TextAlignment.Near,false);
+
+        var tilesTop=bounds.Top+D(TilesTopDip);
+        var speedCard=new Rectangle(left,tilesTop,width,D(TilesHeightDip));
+        DrawSpeedTiles(graphics,speedCard,unit,ios,sectionFont,cardRadius);
+        // The conversation the figures belong to has a cell of its own: a full-width row closing the
+        // tile grid, one 12 DIP gutter below it, laid out like every other row (label left, value right).
+        var conversationCell=new Rectangle(left,speedCard.Bottom+D(12),width,D(ConversationCellDip));
+        Ios18Palette.FillRoundedCard(graphics,conversationCell,cardRadius,ios.CardSurface,Color.Transparent,0f);
+        var conversationLabel=CodexUi.T("本对话","This chat");
+        var conversationLabelWidth=MeasureWidth(graphics,conversationLabel,labelFont)+D(16);
+        DrawAlignedText(graphics,conversationLabel,labelFont,new Rectangle(contentLeft,conversationCell.Top,conversationLabelWidth,conversationCell.Height),
+            ios.TextPrimary,TextAlignment.Near,false);
+        DrawAlignedText(graphics,string.IsNullOrWhiteSpace(_presentation.ConversationTitle) ? "—" : _presentation.ConversationTitle,valueFont,
+            new Rectangle(contentLeft+conversationLabelWidth,conversationCell.Top,contentWidth-conversationLabelWidth,conversationCell.Height),
+            ios.TextSecondary,TextAlignment.Far,false);
+
         int Group(OverlayMetric r)=>r.Field switch
         {
             DisplayField.Context or DisplayField.ContextPercent=>1,
             DisplayField.TurnDuration or DisplayField.ModelTime or DisplayField.FirstTokenTime=>2,
             _=>0
         };
-        var breaks=rows.Skip(1).Select((r,i)=>Group(r)!=Group(rows[i])).Count(x=>x);
-        var rowHeight=layout.ExpandedRowHeight;var gap=D(12);
-        var top=bounds.Top+D(208);
-        var plate=new Rectangle(bounds.Left+D(12),top-D(4),bounds.Width-D(24),bounds.Bottom-D(12)-top+D(4));
-        using(var shape=CreateRoundedRectanglePath(plate,Math.Max(0,metrics.PanelRadius-D(12))))
-        using(var fill=new SolidBrush(Color.FromArgb(GlassAppearance.ReadingPlateAlpha(CodexUi.GlassTransparency),_palette.Background)))graphics.FillPath(fill,shape);
-        for(var i=0;i<rows.Count;i++)
+        // Input's two subsets (cached, uncached) follow input directly; output comes after them.
+        static int Rank(DisplayField field)=>field switch
         {
-            if(i>0 && Group(rows[i])!=Group(rows[i-1]))
+            DisplayField.Total=>0, DisplayField.Input=>1, DisplayField.CacheHit=>2, DisplayField.CacheMiss=>3,
+            DisplayField.Output=>4, DisplayField.Reasoning=>5, DisplayField.CacheHitRate=>6, _=>7
+        };
+        var rows=_presentation.PanelRows.OrderBy(Group).ThenBy(r=>Rank(r.Field)).ToList();
+        string GroupTitle(int group)=>group switch
+        {
+            1=>CodexUi.T("上下文","Context"),
+            2=>CodexUi.T("耗时","Timing"),
+            _=>CodexUi.T("Token 用量","Tokens")
+        };
+        var rowHeight=layout.ExpandedRowHeight;
+        var top=conversationCell.Bottom+D(24);
+        // Hairlines are filled, not stroked: a 1 px pen on this surface straddles two pixel rows and
+        // renders as a faint 2 px smear, and a line to card.Right overshoots the card by one pixel.
+        using var separator=new SolidBrush(ios.Separator);
+        const int hairline=1;
+        var start=0;
+        while(start<rows.Count)
+        {
+            var end=start;
+            while(end+1<rows.Count && Group(rows[end+1])==Group(rows[start]))end++;
+            var count=end-start+1;
+            // Header ink ends 9 DIP above its card, as on the settings page.
+            Section(GroupTitle(Group(rows[start])),top-D(2));
+            var card=new Rectangle(left,top+D(22),width,count*rowHeight);
+            Ios18Palette.FillRoundedCard(graphics, card, cardRadius, ios.CardSurface, Color.Transparent, 0f);
+            for(var i=start;i<=end;i++)
             {
-                using var line=new Pen(Color.FromArgb(24,_palette.Value),1);
-                graphics.DrawLine(line,plate.Left+D(16),top+gap/2,plate.Right-D(16),top+gap/2);top+=gap;
+                var rowTop=card.Top+(i-start)*rowHeight;
+                if(i>start)graphics.FillRectangle(separator,card.Left+D(16),rowTop,card.Width-D(16),hairline);
+                DrawExpandedRow(graphics,rows[i],new Rectangle(card.Left+D(16),rowTop,card.Width-D(32),rowHeight),labelFont,valueFont);
             }
-            DrawExpandedRow(graphics,rows[i],new Rectangle(plate.Left+D(16),top,plate.Width-D(32),rowHeight),labelFont,valueFont);
-            top+=rowHeight;
+            top=card.Bottom+D(24);
+            start=end+1;
         }
-        // A narrow, crisp vector rim defines the contour independently of the softer optical glow.
-        using(var rim=CreateRoundedRectanglePath(Rectangle.Inflate(bounds,-1,-1),Math.Max(1,metrics.PanelRadius-1)))
-        using(var pen=new Pen(Color.FromArgb(30,_palette.Value),Math.Max(.75f,(float)unit*.75f)))graphics.DrawPath(pen,rim);
     }
 
-    private void DrawHero(Graphics g,OverlayMetric metric,Rectangle bounds,Font label,int scale)
+    /// <summary>iOS 18 summary tiles (as in Weather and Fitness): four equal cards in a two-column
+    /// grid, each a caption above one figure, so no metric dominates the layout. Captions share one
+    /// baseline per row and figures another; speeds use grouping and one decimal. As the front page's
+    /// headline these are 60 DIP tall with 28 pt figures; the statistics page's are 68 with 24.</summary>
+    private void DrawSpeedTiles(Graphics g,Rectangle area,double unit,Ios18Palette ios,Font captionFont,float radius)
     {
-        var d=CurrentLayout!.Dpi/96d*scale/100d;
-        int D(int n)=>(int)Math.Round(n*d);
-        var text=metric.Value;var unit="";
-        if(metric.Field==DisplayField.Total && long.TryParse(text,NumberStyles.Number,CultureInfo.InvariantCulture,out var number))
-            text=MetricFormat.CompactTokens(number);
-        else if(text.EndsWith(" tok/s",StringComparison.Ordinal)){text=text[..^6];unit="tok/s";}
-        using var numberFont=new Font(_typeface.Family,(text.Length>7?22:26)*scale/100f,FontStyle.Bold);
-        var heroLabel = metric.Field == DisplayField.Tps ? CodexUi.T("输出速度", "Throughput") : metric.ExpandedLabel;
-        DrawAlignedText(g,heroLabel,label,new Rectangle(bounds.Left,bounds.Top,bounds.Width,D(20)),
-            CodexUi.Mix(_palette.Background,_palette.Value,.85),TextAlignment.Near,false);
-        var valueRect=new Rectangle(bounds.Left,bounds.Top+D(20),bounds.Width,D(46));
-        DrawAlignedText(g,text,numberFont,valueRect,_palette.Value,TextAlignment.Near,false);
-        if(unit.Length>0)
+        float P(float n)=>(float)(n*unit);
+        var scale=CurrentLayout!.ScalePercent;
+        static string Speed(string? text)
         {
-            var numberWidth=(int)Math.Ceiling(g.MeasureString(text,numberFont,int.MaxValue,StringFormat.GenericTypographic).Width);
-            using var font=CodexUi.Font(10*scale/100f);
-            DrawAlignedText(g,unit,font,new Rectangle(bounds.Left+numberWidth+D(8),valueRect.Top+D(18),
-                Math.Max(0,bounds.Width-numberWidth-D(8)),D(23)),_palette.Label,TextAlignment.Near,false);
+            if(string.IsNullOrWhiteSpace(text))return "—";
+            var raw=text.EndsWith(" tok/s",StringComparison.Ordinal)?text[..^6]:text;
+            return double.TryParse(raw,NumberStyles.Float,CultureInfo.InvariantCulture,out var value)
+                ? value.ToString("N1",CultureInfo.InvariantCulture) : raw;
+        }
+        using var valueFont=CodexUi.UiFont(21f*scale/100f,semibold:true);
+        using var unitFont=CodexUi.UiFont(11.25f*scale/100f);
+        void At(string text,Font font,float left,float width,float baseline,Color color)
+        {
+            var top=baseline-AppleText.BaselineOffset(g,font);
+            AppleText.Draw(g,text,font,new RectangleF(left,top,width,P(60)),color,StringAlignment.Near,StringAlignment.Near);
+        }
+        var primary=_presentation.Primary;
+        var isSpeed=primary.Field is DisplayField.AverageSpeed or DisplayField.Tps;
+        var peak=_presentation.ExpandedRows.FirstOrDefault(r=>r.Field==DisplayField.PeakSpeed)?.Value;
+        var coverage=_presentation.TimingCoverage?.Replace("/"," / ",StringComparison.Ordinal);
+        var source=_presentation.TimingSourceText is { Length: > 0 } text ? " · "+text : "";
+        var tiles=new[]
+        {
+            (isSpeed?CodexUi.T("平均速度","Average speed"):primary.ExpandedLabel,isSpeed?Speed(primary.Value):primary.Value,isSpeed?"tok/s":""),
+            (CodexUi.T("最近一次","Last response"),Speed(_presentation.LastResponseText),"tok/s"),
+            (CodexUi.T("峰值","Peak"),Speed(peak),"tok/s"),
+            (CodexUi.T("已计时","Timed")+source,coverage??"—",CodexUi.T("次","")),
+        };
+        var gap=P(12);
+        var tileWidth=(area.Width-gap)/2f;
+        var tileHeight=(area.Height-gap)/2f;
+        for(var index=0;index<tiles.Length;index++)
+        {
+            var tile=Rectangle.Round(new RectangleF(area.Left+(index%2)*(tileWidth+gap),area.Top+(index/2)*(tileHeight+gap),tileWidth,tileHeight));
+            Ios18Palette.FillRoundedCard(g,tile,radius,ios.CardSurface,Color.Transparent,0f);
+            var left=tile.Left+P(16);
+            var width=tile.Width-P(24);
+            At(tiles[index].Item1,captionFont,left,width,tile.Top+P(21),ios.TextSecondary);
+            var value=tiles[index].Item2;
+            At(value,valueFont,left,width,tile.Top+P(48),ios.TextPrimary);
+            if(tiles[index].Item3.Length==0||value=="—")continue;
+            var valueWidth=MeasureWidth(g,value,valueFont);
+            At(tiles[index].Item3,unitFont,left+valueWidth+P(4),Math.Max(0,width-valueWidth-P(4)),tile.Top+P(48),ios.TextSecondary);
         }
     }
 
+    /// <summary>Margin between the panel edge and every white shape (cards, tiles).</summary>
+    internal const int PanelMarginDip = 20;
+    /// <summary>Corner radius of the panel; <see cref="OverlayRenderMetrics.PanelRadius"/> scales it.</summary>
+    internal const int PanelCornerRadiusDip = 40;
+    /// <summary>Settings symbol: 26 DIP of ink and no backing shape (the user rejected a circle behind
+    /// it, and a caption under it; 22 and 24 were too small, 28 too large), centred on the top-right
+    /// corner's centre.</summary>
+    internal const int SettingsGlyphDip = 26;
+    /// <summary>The tiles start as far below the settings glyph as the glyph is from the top and right
+    /// edges, which puts them one corner diameter from the top whatever the glyph's size.</summary>
+    internal const int TilesTopDip = PanelCornerRadiusDip * 2;
+    internal const int TilesHeightDip = 132;
+    /// <summary>Height of the conversation's own cell, one standard row.</summary>
+    internal const int ConversationCellDip = 50;
+    /// <summary>Text margin shared by every label on the left and by "Done" and row values on the right.</summary>
+    internal const int TextMarginDip = 36;
+    /// <summary>Front-page title, named by the user, set in the comic-style ZCOOL KuaiLe (SIL OFL 1.1)
+    /// at a size whose ink is as tall as the settings glyph.</summary>
+    internal const string RootTitleChinese = "控制面板";
+    internal const string RootTitleEnglish = "Control Panel";
+    internal const string RootTitleFontFile = "ZCOOLKuaiLe-Regular.ttf";
+    private const float RootTitlePixels = 31f;
     internal Rectangle SettingsButtonBounds=>CurrentLayout is {} layout?GetSettingsButtonBounds(layout):Rectangle.Empty;
-    private Rectangle StatisticsButtonBounds
-    {
-        get
-        {
-            var gear = SettingsButtonBounds;
-            if (gear.IsEmpty) return Rectangle.Empty;
-            var width = (int)Math.Round(gear.Width * 1.65);
-            var gap = (int)Math.Round(gear.Width / 6d);
-            return new Rectangle(gear.Left - width - gap, gear.Top + (int)Math.Round(gear.Height / 24d), width, (int)Math.Round(gear.Height * 22d / 24d));
-        }
-    }
     private static Rectangle GetSettingsButtonBounds(OverlayLayoutResult layout)
     {
         if(layout.PanelBounds.IsEmpty)return Rectangle.Empty;
         var unit=layout.Dpi/96d*layout.ScalePercent/100d;
-        // Outer radius 32, button radius 26: keep their centers concentric.
-        // The settings window's close button uses this same 32 DIP size.
-        var side=(int)Math.Round(32*unit);var inset=(int)Math.Round(16*unit);
+        // 44 DIP touch target centred on the centre of the panel's top-right corner arc.
+        var side=(int)Math.Round(44*unit);
+        var radius=OverlayRenderMetrics.Create(layout.Dpi,layout.ScalePercent).PanelRadius;
         var panel=layout.PanelBounds;
-        return new Rectangle(panel.Right-inset-side,panel.Top+inset,side,side);
+        return new Rectangle(panel.Right-radius-side/2,panel.Top+radius-side/2,side,side);
     }
 
-    private void DrawSettingsGlyph(Graphics graphics,Rectangle bounds)
+    private void DrawSettingsGlyph(Graphics graphics,Rectangle bounds,double unit)
     {
-        if(!_liquidFrame)
+        if(bounds.IsEmpty)return;
+        var ios = Ios18Palette.FromOverlay(_palette);
+        // Same pointer feedback as the navigation text buttons on the pushed pages.
+        var iconColor = _settingsPressed ? Color.FromArgb(110, ios.Accent) : _settingsHovered ? Color.FromArgb(185, ios.Accent) : ios.Accent;
+        // Rasterised at device size and copied without resampling, so the stroke stays crisp.
+        var size=(int)Math.Round(SettingsGlyphDip*unit);
+        if((bounds.Width-size)%2!=0)size++;
+        if(_settingsIcon is null || _settingsIcon.Width!=size || _settingsIconColor!=iconColor)
         {
-            using var ring=new SolidBrush(Color.FromArgb(_settingsHovered?160:105,_palette.Background));
-            graphics.FillEllipse(ring,bounds);
-            using var line=new Pen(Color.FromArgb(25,_palette.Value),1);graphics.DrawEllipse(line,bounds);
+            _settingsIcon?.Dispose();
+            _settingsIconColor = iconColor;
+            _settingsIcon = Ios18Palette.CreateGearshapeIcon(size, iconColor);
         }
-        else
-        {
-            var circle=RectangleF.Inflate(bounds,-.75f,-.75f);
-            using var line=new Pen(Color.FromArgb(_settingsHovered?65:40,_palette.Value),.85f);
-            graphics.DrawEllipse(line,circle);
-        }
-        var size=(int)Math.Round(bounds.Width*.6d);
-        var rasterSize = size * 4;
-        if(_settingsIcon is null || _settingsIcon.Width!=rasterSize || _settingsIconColor!=_palette.Value)
-        {
-            _settingsIcon?.Dispose();_settingsIconColor=_palette.Value;
-            using var raster=new SKBitmap(rasterSize,rasterSize,SKColorType.Bgra8888,SKAlphaType.Premul);
-            using(var canvas=new SKCanvas(raster))
-            {
-                canvas.Clear(SKColors.Transparent);canvas.Scale(rasterSize/24f);
-                using var paint=new SKPaint{Style=SKPaintStyle.Stroke,StrokeWidth=1.8f,IsAntialias=true,
-                    StrokeCap=SKStrokeCap.Round,StrokeJoin=SKStrokeJoin.Round,
-                    Color=new SKColor(_palette.Value.R,_palette.Value.G,_palette.Value.B)};
-                using var path=SKPath.ParseSvgPathData("M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915");canvas.DrawPath(path,paint);canvas.DrawCircle(12,12,3,paint);
-            }
-            using var bridge=new Bitmap(rasterSize,rasterSize,raster.RowBytes,PixelFormat.Format32bppPArgb,raster.GetPixels());
-            _settingsIcon=new Bitmap(bridge);
-        }
-        var oldInterpolation = graphics.InterpolationMode;
-        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        graphics.DrawImage(_settingsIcon, new Rectangle(bounds.Left+(bounds.Width-size)/2,bounds.Top+(bounds.Height-size)/2,size,size),
-            0,0,rasterSize,rasterSize,GraphicsUnit.Pixel);
-        graphics.InterpolationMode = oldInterpolation;
+        Ios18Palette.DrawExact(graphics,_settingsIcon,new RectangleF(bounds.Left+(bounds.Width-size)/2,bounds.Top+(bounds.Height-size)/2,size,size));
     }
 
     private void DrawCompactMetric(
@@ -1653,14 +1689,15 @@ internal sealed class TokenStripForm : Form
         var gap = (int)Math.Ceiling(12 * graphics.DpiX / 96d);
         var valueWidth = MeasureWidth(graphics,metric.Value,valueFont)+gap;
         var labelWidth = Math.Max(0,bounds.Width-valueWidth-gap);
-        using var localized = CodexUi.FontForText(metric.ExpandedLabel,labelFont.Size);
+        var localized = labelFont;
+        var ios = Ios18Palette.FromOverlay(_palette);
         if (MeasureWidth(graphics,metric.ExpandedLabel,localized) <= labelWidth)
             DrawAlignedText(graphics,metric.ExpandedLabel,localized,new Rectangle(bounds.Left,bounds.Top,labelWidth,bounds.Height),
-                DataLabelColor,TextAlignment.Near,false);
+                ios.TextPrimary,TextAlignment.Near,false);
         else
         {
             using var smaller=CodexUi.FontForText(metric.ExpandedLabel,Math.Max(9.5f,labelFont.Size-.5f));
-            using var brush=new SolidBrush(DataLabelColor);
+            using var brush=new SolidBrush(ios.TextPrimary);
             using var wrap=new StringFormat{LineAlignment=StringAlignment.Center,Trimming=StringTrimming.None};
             graphics.DrawString(metric.ExpandedLabel,smaller,brush,new Rectangle(bounds.Left,bounds.Top,labelWidth,bounds.Height),wrap);
         }
@@ -1669,7 +1706,7 @@ internal sealed class TokenStripForm : Form
             metric.Value,
             valueFont,
             new Rectangle(bounds.Right-valueWidth,bounds.Top,valueWidth,bounds.Height),
-            ValueColorFor(metric),
+            ios.TextSecondary,
             TextAlignment.Far,
             shadow: false);
     }
@@ -1703,7 +1740,7 @@ internal sealed class TokenStripForm : Form
         OverlayRenderMetrics? metrics = null)
     {
         using var format = CreateFormat(alignment);
-        using var localizedFont = text.Any(c => c is >= '\u2e80' and <= '\u9fff')
+        using var localizedFont = !IsInterFont(font) && text.Any(c => c is >= '\u2e80' and <= '\u9fff')
             ? CodexUi.FontForText(text, font.Size, CodexUi.IsEmphasized(font)) : null;
         font = localizedFont ?? font;
 
@@ -1713,19 +1750,13 @@ internal sealed class TokenStripForm : Form
             // Two passes: one at 1 DIP, one fainter at 2 DIP. Still a drop shadow, not an outline —
             // but a soft edge holds up on a busy backdrop where a single hard pixel does not.
             using var shadowBrush = new SolidBrush(OverlayThemePalette.ShadowFor(color));
-            graphics.DrawString(
-                text,
-                font,
-                shadowBrush,
-                new Rectangle(bounds.X, bounds.Y + offset, bounds.Width, bounds.Height),
-                format);
+            var shadowBounds = new Rectangle(bounds.X, bounds.Y + offset, bounds.Width, bounds.Height);
+            if (!AppleText.Draw(graphics, text, font, shadowBounds, shadowBrush.Color, format.Alignment, format.LineAlignment))
+                graphics.DrawString(text, font, shadowBrush, shadowBounds, format);
             using var softBrush = new SolidBrush(OverlayThemePalette.ShadowFor(color, 0.45d));
-            graphics.DrawString(
-                text,
-                font,
-                softBrush,
-                new Rectangle(bounds.X, bounds.Y + (offset * 2), bounds.Width, bounds.Height),
-                format);
+            var softBounds = new Rectangle(bounds.X, bounds.Y + (offset * 2), bounds.Width, bounds.Height);
+            if (!AppleText.Draw(graphics, text, font, softBounds, softBrush.Color, format.Alignment, format.LineAlignment))
+                graphics.DrawString(text, font, softBrush, softBounds, format);
         }
 
         using var brush = new SolidBrush(color);
@@ -1931,13 +1962,15 @@ internal sealed class TokenStripForm : Form
 
     private static int MeasureWidth(Graphics graphics, string text, Font font)
     {
-        using var localized = text.Any(c => c is >= '\u2e80' and <= '\u9fff') ? CodexUi.FontForText(text,font.Size,CodexUi.IsEmphasized(font)) : null;
+        using var localized = !IsInterFont(font) && text.Any(c => c is >= '\u2e80' and <= '\u9fff') ? CodexUi.FontForText(text,font.Size,CodexUi.IsEmphasized(font)) : null;
         font = localized ?? font;
         var nativeWidth=AppleText.Measure(graphics,text,font);if(nativeWidth.HasValue)return (int)Math.Ceiling(nativeWidth.Value);
         using var format = CreateFormat(TextAlignment.Near);
         return (int)Math.Ceiling(
             graphics.MeasureString(text, font, new SizeF(4096f, 4096f), format).Width);
     }
+
+    private static bool IsInterFont(Font font) => font.FontFamily.Name.StartsWith("Inter", StringComparison.OrdinalIgnoreCase);
 
     private static GraphicsPath CreateRoundedRectanglePath(Rectangle rectangle, int radius)
     {
@@ -1968,7 +2001,7 @@ internal sealed class TokenStripForm : Form
         if (disposing)
         {
             _liquidTimer.Stop(); _liquidTimer.Dispose(); _liquid.Dispose();
-            _settingsIcon?.Dispose();_settingsTip.Dispose();
+            _settingsIcon?.Dispose();
             CancelEditGesture();
             Region?.Dispose();
             Region = null;

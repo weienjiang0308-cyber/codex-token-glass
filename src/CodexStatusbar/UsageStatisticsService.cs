@@ -11,7 +11,7 @@ internal sealed record StatisticsSnapshot(IReadOnlyList<UsageEntry> Entries,
 
 internal sealed class UsageStatisticsService : IDisposable
 {
-    private readonly UsageLedger _ledger = new();
+    private readonly UsageLedger _ledger = new(MagpieGatewayTimingStore.TryCreateDefault());
     private readonly OfficialPriceUpdater _prices = new();
     private readonly CancellationTokenSource _stop = new();
     private readonly string _sessions;

@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>CodexStatusbar</AssemblyName>
     <RootNamespace>CodexStatusbar</RootNamespace>
-    <Version>1.0.0-rc3-glass.30</Version>
+    <Version>1.0.0</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
     <Product>Codex Token Glass</Product>
@@ -40,6 +40,7 @@
     <PackageReference Include="LiquidGlass" Version="1.0.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" />
     <EmbeddedResource Include="..\..\assets\fonts\*.ttf" />
+    <EmbeddedResource Include="..\..\assets\fonts\*.otf" />
     <!--
       UI Automation, used only to *read* the official composer's geometry (the Context-usage indicator
       and the toolbar row). That is what lets the strip dock to the real control instead of to a

@@ -46,9 +46,9 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
     private readonly ToolStripMenuItem _detailMenuItem;
     private readonly LocalControl _localControl;
     private SettingsForm? _settingsForm;
+    private Rectangle? _lastPanelRelativeToCapsule;
     private StatisticsForm? _statisticsForm;
     private readonly UsageStatisticsService _statistics;
-    private ToolStripMenuItem _apiValueMenu = null!;
     private StatisticsSnapshot? _displayedStatistics;
     private readonly Dictionary<AttachmentReferencePoint, ToolStripMenuItem> _anchorPointItems = new();
     private readonly Dictionary<OverlayPositionMode, ToolStripMenuItem> _positionModeItems = new();
@@ -190,8 +190,6 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             ApplyTheme);
 
         var menu = new ContextMenuStrip { Font = CodexUi.FontForText(CodexUi.English ? "Menu" : "菜单",10) };
-        _apiValueMenu = new ToolStripMenuItem("API 等值 · 读取中") { Enabled = false };
-        menu.Items.Add(_apiValueMenu);
 
         // Lifecycle status first: with the watcher running these two lines answer "is Codex up, and is
         // the strip attached to it" without opening the debug log.
@@ -341,7 +339,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _detailMenuItem = new ToolStripMenuItem("详情面板  ·  展开 / 收起");
         _detailMenuItem.Click += (_, _) => ToggleDetailPanel();
         menu.Items.Add(_detailMenuItem);
-        var statisticsItem = new ToolStripMenuItem("Statistics · 用量统计…");
+        var statisticsItem = new ToolStripMenuItem(CodexUi.T("用量统计…", "Usage statistics…"));
         statisticsItem.Click += (_, _) => OpenStatistics();
         menu.Items.Add(statisticsItem);
         var settingsItem = new ToolStripMenuItem(CodexUi.T("设置…", "Settings…"));
@@ -404,7 +402,6 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _form.SetTextShadow(_settings.TextShadow);
         _form.CapsuleClicked += HandleCapsuleClicked;
         _form.SettingsRequested += (_, _) => OpenSettings();
-        _form.StatisticsRequested += (_, _) => OpenStatistics();
         _form.EditPreviewChanged += HandleEditPreviewChanged;
         _form.EditGestureCompleted += HandleEditGestureCompleted;
         _form.EditSaveRequested += (_, _) => SaveManualEditing();
@@ -432,18 +429,37 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         _localControl=new LocalControl(()=>
         {
             if(!_targetHighlight.IsDisposed)_targetHighlight.BeginInvoke((Action)ExitOverlay);
+        },command:value=>
+        {
+            if(!_targetHighlight.IsDisposed)_targetHighlight.BeginInvoke((Action)(()=>HandleControlCommand(value)));
         });
+    }
+
+    private void HandleControlCommand(byte value)
+    {
+        switch(value)
+        {
+            case LocalControl.TogglePanelCommand: ToggleDetailPanel(); break;
+            case LocalControl.OpenSettingsCommand: OpenSettings(); break;
+            case LocalControl.CloseSettingsCommand:
+                if (_statisticsForm is { IsDisposed: false } open) open.DismissStack();
+                else _settingsForm?.Close();
+                break;
+            case LocalControl.OpenStatisticsCommand: OpenStatistics(); break;
+            case LocalControl.CloseStatisticsCommand: _statisticsForm?.Close(); break;
+        }
     }
 
     private void OpenStatistics()
     {
-        if(_settingsForm is { IsDisposed:false,Visible:true }){_settingsForm.Activate();return;}
-        CollapseAndHide();
-        DwmFlushForSettings();
-        if (_statisticsForm is null || _statisticsForm.IsDisposed)
-            _statisticsForm = new StatisticsForm(_statistics, () => _lastSnapshot, () => CodexUi.Palette(_effectiveTheme));
-        _statisticsForm.Show();
-        _statisticsForm.Activate();
+        if(_settingsForm is { IsDisposed:false,Visible:true })
+        {
+            if(_statisticsForm is null){var owner=_settingsForm;_settingsForm.BeginInvoke(()=>ShowStatisticsFrom(owner));}
+            return;
+        }
+        // Statistics lives under Settings in the navigation stack (panel → settings → statistics),
+        // so opening it directly pushes it on a settings page and Back always has somewhere to go.
+        Defer(() => ShowSettings(pushStatistics: true));
     }
 
     private void AddAnchorMenu(ToolStripMenuItem menu, string text, AnchorMode mode)
@@ -1611,9 +1627,6 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
                 _settings.VisibleFields);
         if (!_waitingForConversation && _lastSnapshot is not null)
         {
-            var totals = Codex.SpeedMetrics.UsageTotals.Sum(_statistics.Current?.Entries.Where(e => e.Thread == _lastSnapshot.ThreadId)
-                ?? Array.Empty<Codex.SpeedMetrics.UsageEntry>());
-            var price = StatisticsForm.Price(totals);
             var rows = _presentation.ExpandedRows.ToList();
             rows.RemoveAll(r => r.Field == DisplayField.AverageSpeed);
             if (rows.All(r => r.Field != _presentation.Primary.Field)) rows.Insert(0, _presentation.Primary);
@@ -1622,11 +1635,8 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             _presentation = _presentation with {
                 Primary = new OverlayMetric(DisplayField.AverageSpeed,CodexUi.T("均速","Average"),CodexUi.T("响应平均速度","Response throughput"),
                     MetricFormat.FormatTpsFloat(_lastSnapshot.AverageTps)+" tok/s",_lastSnapshot.AverageTps.HasValue),
-                Secondary = new OverlayMetric(DisplayField.None, "API", CodexUi.T("API 等值 · USD","API equivalent · USD"), price,
-                totals.Responses > totals.UnpricedResponses), ExpandedRows = rows };
-            if (_apiValueMenu is not null) _apiValueMenu.Text = "本对话 API 等值 · " + price + " USD（Standard）";
+                ExpandedRows = rows };
         }
-        else if (_apiValueMenu is not null) _apiValueMenu.Text = "本对话 API 等值 · —";
         _form.SetPresentation(_presentation);
     }
 
@@ -1779,6 +1789,8 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         }
 
         _form.ApplyLayout(layout);
+        if (_form.PanelScreenBounds is Rectangle panelRect && _form.CapsuleScreenBounds is Rectangle capsuleRect)
+            _lastPanelRelativeToCapsule = new Rectangle(panelRect.X - (capsuleRect.X + capsuleRect.Width / 2), panelRect.Y - capsuleRect.Y, panelRect.Width, panelRect.Height);
         ReportPosition(target, manualTopLeft, layout);
         if (layout.State == OverlayVisualState.HiddenForSpace)
         {
@@ -1911,7 +1923,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
         hostWindow,
         _settings.AnchorMode,
         _interaction.State == OverlayVisualState.Expanded,
-        _presentation.DetailRows.Count,
+        _presentation.PanelRows.Count,
         _presentation.ShowContextProgress,
         manualTopLeft,
         _settings.OverlayScalePercent,
@@ -2443,7 +2455,7 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
             target.HostWindow,
             _settings.AnchorMode,
             RequestExpanded: false,
-            _presentation.DetailRows.Count,
+            _presentation.PanelRows.Count,
             _presentation.ShowContextProgress,
             topLeft,
             ScalePercent: transition.Draft.ScalePercent));
@@ -2677,27 +2689,109 @@ internal sealed class OverlayContext : ApplicationContext, IFastPathTarget
 
     private void OpenSettings()
     {
-        _form.BeginInvoke((Action)ShowSettings);
+        Defer(ShowSettings);
     }
 
-    private void ShowSettings()
+    /// <summary>Runs an action after the current message on the UI thread. The strip may never have
+    /// been shown (Codex minimised or covered at start-up), in which case it has no window handle and
+    /// BeginInvoke on it throws; fall back to the always-created highlight window, or run inline.</summary>
+    private void Defer(Action action)
+    {
+        if (_form.IsHandleCreated && !_form.IsDisposed) _form.BeginInvoke(action);
+        else if (_targetHighlight.IsHandleCreated && !_targetHighlight.IsDisposed) _targetHighlight.BeginInvoke(action);
+        else action();
+    }
+    private IReadOnlyList<SettingsToggle> BuildSettingsToggles()
+    {
+        const DisplayField cache = DisplayField.CacheHit | DisplayField.CacheMiss | DisplayField.CacheHitRate;
+        const DisplayField context = DisplayField.Context | DisplayField.ContextPercent;
+        const DisplayField timing = DisplayField.TurnDuration | DisplayField.ModelTime | DisplayField.FirstTokenTime;
+        var display = CodexUi.T("显示", "Display");
+        SettingsToggle Group(string title, DisplayField group) => new(display, title,
+            () => (_settings.VisibleFields & group) != 0,
+            enabled => SetVisibleFieldGroup(group, enabled));
+        return new[]
+        {
+            Group(CodexUi.T("缓存明细", "Cache details"), cache),
+            Group(CodexUi.T("上下文用量", "Context usage"), context),
+            Group(CodexUi.T("耗时统计", "Timing"), timing),
+            new SettingsToggle(display, CodexUi.T("透明状态条", "Transparent strip"),
+                () => _settings.TransparentBackground, enabled => _transparencyMenuItem.Checked = enabled),
+            new SettingsToggle(display, CodexUi.T("状态条文字阴影", "Strip text shadow"),
+                () => _settings.TextShadow, enabled => { if (_textShadowMenuItem is not null) _textShadowMenuItem.Checked = enabled; })
+        };
+    }
+
+    private void SetVisibleFieldGroup(DisplayField group, bool enabled)
+    {
+        var updated = enabled ? _settings.VisibleFields | group : _settings.VisibleFields & ~group;
+        if (updated == DisplayField.None || updated == _settings.VisibleFields) return;
+        _settings.VisibleFields = updated;
+        _settings.Save(_settingsPath);
+        UpdateFieldChecks();
+        RefreshPresentation();
+    }
+
+    private void ShowSettings() => ShowSettings(pushStatistics: false);
+
+    private void ShowSettings(bool pushStatistics)
     {
         if (_settingsForm is { IsDisposed: false }) { _settingsForm.Show(); _settingsForm.Activate(); return; }
-        var restoreStatistics=_statisticsForm is {IsDisposed:false,Visible:true};
-        if(restoreStatistics)_statisticsForm!.Hide();
+        var anchor = ResolveSheetAnchor();
         _interaction.CollapseForHostChange();
         _form.Hide();
         // Finish removing the first-level surface before the settings dialog captures
         // its backdrop; otherwise it can permanently refract the previous menu.
         DwmFlushForSettings();
-        _settingsForm = new SettingsForm(() => CodexUi.Palette(_effectiveTheme), () => _lastSnapshot?.ContextWindowTokens);
+        _settingsForm = new SettingsForm(() => CodexUi.Palette(_effectiveTheme), () => _lastSnapshot?.ContextWindowTokens, anchor,
+            BuildSettingsToggles(), ShowStatisticsFrom, pushStatistics);
         _settingsForm.ShowDialog();
+        var returnToPanel = _settingsForm.ReturnToPanel;
         _settingsForm.Dispose();
         _settingsForm = null;
         if(Volatile.Read(ref _disposed)!=0)return;
-        if(restoreStatistics && _statisticsForm is {IsDisposed:false})_statisticsForm.Show();
         if (_currentTarget is not null) ApplyLayout(_currentTarget);
         _form.RestorePopupLayer();
+        if (returnToPanel) ExpandPanel();
+    }
+
+    /// <summary>Back from Settings: the first-level panel is the root of the stack, so re-open it.</summary>
+    private void ExpandPanel()
+    {
+        if (_currentTarget is null || _interaction.State == OverlayVisualState.Expanded) return;
+        if (!_interaction.OnCapsuleMouseUp()) return;
+        ApplyLayout(_currentTarget);
+    }
+
+    /// <summary>Second-level sheets (settings, statistics) open exactly where the first-level panel
+    /// sits, or where it would sit relative to the strip when it is collapsed.</summary>
+    private Rectangle? ResolveSheetAnchor()
+    {
+        // A hidden strip (Codex minimised or covered) still reports stale bounds; centre instead.
+        if (!_form.IsHandleCreated || !_form.Visible) return null;
+        var anchor = _form.PanelScreenBounds;
+        if (anchor is null && _form.CapsuleScreenBounds is Rectangle capsule)
+        {
+            if (_lastPanelRelativeToCapsule is Rectangle relative)
+                anchor = new Rectangle(capsule.X + capsule.Width / 2 + relative.X, capsule.Y + relative.Y, relative.Width, relative.Height);
+            else
+            {
+                var width = (int)Math.Round(OverlayLayoutCalculator.ExpandedWidthDip * _form.DeviceDpi / 96d);
+                var gap = (int)Math.Round(6d * _form.DeviceDpi / 96d);
+                anchor = new Rectangle(capsule.Left + capsule.Width / 2 - width / 2, capsule.Top - gap - 1, width, 1);
+            }
+        }
+        return anchor;
+    }
+
+    private void ShowStatisticsFrom(SettingsForm owner)
+    {
+        using var statistics = new StatisticsForm(_statistics, () => _lastSnapshot, () => CodexUi.Palette(_effectiveTheme),
+            owner.Bounds, CodexUi.T("设置", "Settings"));
+        _statisticsForm = statistics;
+        statistics.ShowDialog(owner);
+        if (ReferenceEquals(_statisticsForm, statistics)) _statisticsForm = null;
+        if (statistics.DismissAll && !owner.IsDisposed) owner.CompleteAndClose();
     }
 
     [DllImport("dwmapi.dll", EntryPoint="DwmFlush")]

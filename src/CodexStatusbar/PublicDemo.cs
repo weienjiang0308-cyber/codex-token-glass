@@ -21,10 +21,12 @@ internal static class PublicDemo
             var presentation=OverlayPresentationBuilder.Create(snapshot,DisplayField.Tps,DisplayField.Total,fields);
             presentation = presentation with {
                 Primary = new OverlayMetric(DisplayField.AverageSpeed,"均速","响应平均速度","128.0 tok/s",true),
-                Secondary = new OverlayMetric(DisplayField.None,"API","API 等值 · USD","$12.48",true),
-                TimingCoverage = "18/20", ExpandedRows = presentation.ExpandedRows.Prepend(presentation.Secondary).DistinctBy(r => r.Field).ToArray() };
-            var panelHeight=244+presentation.DetailRows.Count*28;
-            var size=new Size(444,panelHeight+64);
+                TimingCoverage = "18/20", LastResponseText = "142.3 tok/s", TimingSourceText = "网关精确计时",
+                ExpandedRows = presentation.ExpandedRows.Prepend(presentation.Secondary).DistinctBy(r => r.Field).ToArray() };
+            var rowHeight=Math.Min(OverlayLayoutCalculator.NormalRowHeightDip,
+                (OverlayLayoutCalculator.SheetHeightDip-OverlayLayoutCalculator.PanelChromeHeightDip)/Math.Max(1,presentation.PanelRows.Count));
+            var panelHeight=Math.Max(OverlayLayoutCalculator.SheetHeightDip,OverlayLayoutCalculator.PanelChromeHeightDip+presentation.PanelRows.Count*rowHeight);
+            var size=new Size(524,panelHeight+64);
             using var scene=new Bitmap(size.Width,size.Height,System.Drawing.Imaging.PixelFormat.Format32bppRgb);
             using(var g=Graphics.FromImage(scene))
             {
@@ -37,7 +39,7 @@ internal static class PublicDemo
             form.ApplyTheme(OverlayThemePalette.For(OverlayThemeKind.Light));form.SetPresentation(presentation);
             form.ApplyLayout(new OverlayLayoutResult(OverlayVisualState.Expanded,CollapsedDisplayMode.TwoFields,
                 ExpansionDirection.Up,96,new IntRect(0,0,size.Width,size.Height),
-                new IntRect(12,panelHeight+28,420,22),new IntRect(12,12,420,panelHeight),28));
+                new IntRect(12,panelHeight+28,500,22),new IntRect(12,12,500,panelHeight),rowHeight));
             form.UseSyntheticBackdrop(scene,96);
             using var image=form.RenderSurfaceBitmap(size,96);
             using var composite=new Bitmap(size.Width,size.Height);

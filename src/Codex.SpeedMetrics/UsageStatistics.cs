@@ -5,25 +5,54 @@ using System.Text.Json;
 namespace Codex.SpeedMetrics;
 
 public sealed record UsageEntry(string Id, string Thread, string? Turn, DateTimeOffset At,
-    string Model, long Input, long Cached, long CacheWrite, long Output, long Reasoning, bool Legacy = false);
+    string Model, long Input, long Cached, long CacheWrite, long Output, long Reasoning, bool Legacy = false,
+    bool CacheKnown = true, string? Route = null, string? ServedModel = null, string? UsageSource = null,
+    bool HasSourceConflict = false, long? GatewayInput = null, long? GatewayCached = null, long? GatewayOutput = null,
+    int SegmentIndex = 0, bool RequestCountKnown = true)
+{
+    public string DisplayModel => !string.IsNullOrWhiteSpace(ServedModel) ? ServedModel : Model;
+    public string RouteAndModelKey => string.IsNullOrWhiteSpace(Route) ? DisplayModel : $"{DisplayModel} · {Route}";
+}
+
+public sealed record UsageConflict(string ResponseId, string Thread, string Reason,
+    long PrimaryInput, long PrimaryCached, long PrimaryOutput,
+    long? SecondaryInput, long? SecondaryCached, long? SecondaryOutput);
 
 public sealed record UsageTotals(long Input, long Cached, long Output, long Reasoning,
-    decimal KnownApiUsd, int Responses, int UnpricedResponses)
+    decimal KnownApiUsd, int Responses, int UnpricedResponses,
+    long CacheKnownInput = -1, int CacheKnownResponses = 0, int CacheUnknownResponses = 0,
+    int ConflictResponses = 0, bool RequestCountExact = true)
 {
     public long Total => Input + Output;
-    public double? CachePercent => Input > 0 ? 100d * Cached / Input : null;
+    public long EffectiveCacheInputDenominator => CacheKnownInput >= 0 ? CacheKnownInput : Input;
+    public double? CachePercent => EffectiveCacheInputDenominator > 0 ? 100d * Cached / EffectiveCacheInputDenominator : null;
     public static UsageTotals Sum(IEnumerable<UsageEntry> entries)
     {
-        long input = 0, cached = 0, output = 0, reasoning = 0;
-        decimal cost = 0; int count = 0, unknown = 0;
+        long input = 0, cached = 0, cacheKnownInput = 0, output = 0, reasoning = 0;
+        decimal cost = 0; int count = 0, unknown = 0, cacheKnown = 0, cacheUnknown = 0, conflicts = 0;
+        var requestCountExact = true;
         var prices = ApiEquivalent.Prices;
         foreach (var e in entries)
         {
-            input += e.Input; cached += e.Cached; output += e.Output; reasoning += e.Reasoning; count++;
+            input += e.Input;
+            if (e.CacheKnown)
+            {
+                cached += e.Cached;
+                cacheKnownInput += e.Input;
+                cacheKnown++;
+            }
+            else
+            {
+                cacheUnknown++;
+            }
+            output += e.Output; reasoning += e.Reasoning; count++;
+            if (e.HasSourceConflict) conflicts++;
+            if (!e.RequestCountKnown) requestCountExact = false;
             var value = ApiEquivalent.Price(e, prices);
             if (value is decimal n) cost += n; else unknown++;
         }
-        return new(input, cached, output, reasoning, cost, count, unknown);
+        return new(input, cached, output, reasoning, cost, count, unknown,
+            cacheKnownInput, cacheKnown, cacheUnknown, conflicts, requestCountExact);
     }
 }
 
@@ -85,12 +114,16 @@ public static class UsageMerge
 public sealed class UsageLedger
 {
     private readonly Dictionary<string, UsageFile> _files = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IGatewayTimingLookup? _gatewayLookup;
+    public UsageLedger(IGatewayTimingLookup? gatewayLookup = null) => _gatewayLookup = gatewayLookup;
     public int Errors { get; private set; }
     public int LegacyFiles { get; private set; }
     public IReadOnlyList<UsageEntry> Entries { get; private set; } = Array.Empty<UsageEntry>();
+    public IReadOnlyList<UsageConflict> Conflicts { get; private set; } = Array.Empty<UsageConflict>();
     public void Refresh(string sessionsRoot)
     {
         Errors = 0;
+        _gatewayLookup?.Refresh();
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var root in new[] { sessionsRoot, Path.Combine(Path.GetDirectoryName(sessionsRoot)!, "archived_sessions") })
         {
@@ -107,8 +140,169 @@ public sealed class UsageLedger
         }
         Errors += _files.Values.Sum(f => f.Errors);
         LegacyFiles = _files.Values.Count(f => !f.Modern && f.Legacy.Count > 0);
-        Entries = _files.Values.SelectMany(f => f.Modern ? f.Records : f.Legacy)
-            .GroupBy(e => e.Id, StringComparer.Ordinal).Select(g => g.First()).OrderBy(e => e.At).ToArray();
+        var conflicts = new List<UsageConflict>();
+        var merged = new List<UsageEntry>();
+        var rawAll = _files.Values.SelectMany(f => f.AllEntries);
+
+        foreach (var group in rawAll.GroupBy(e => e.Id, StringComparer.Ordinal))
+        {
+            var items = group.ToList();
+            if (items.Count == 1)
+            {
+                merged.Add(EnrichWithGateway(items[0], conflicts));
+                continue;
+            }
+
+            var first = items[0];
+            var allEquivalent = items.All(item => CountsEqual(first, item));
+            if (allEquivalent)
+            {
+                // Genuine fork copy or mirrored log: deduplicate to one authoritative entry.
+                var best = items
+                    .OrderByDescending(e => !string.Equals(e.Model, "unknown", StringComparison.OrdinalIgnoreCase))
+                    .ThenByDescending(e => !string.IsNullOrWhiteSpace(e.Turn))
+                    .ThenBy(e => e.At)
+                    .First();
+                merged.Add(EnrichWithGateway(best, conflicts));
+                continue;
+            }
+
+            // Same response_id carried different counts: distinguish cross-thread ID collisions
+            // from same-thread count conflicts instead of silently picking the first row.
+            foreach (var threadGroup in items.GroupBy(e => e.Thread, StringComparer.Ordinal))
+            {
+                var threadItems = threadGroup.ToList();
+                var primary = threadItems[0];
+                var sameThreadDivergent = threadItems.Any(item => !CountsEqual(primary, item));
+                var crossThreadCollision = items.Select(i => i.Thread).Distinct(StringComparer.Ordinal).Count() > 1;
+                if (sameThreadDivergent)
+                {
+                    var other = threadItems.First(item => !CountsEqual(primary, item));
+                    conflicts.Add(new UsageConflict(primary.Id, primary.Thread, "same-thread-id-count-conflict",
+                        primary.Input, primary.Cached, primary.Output, other.Input, other.Cached, other.Output));
+                }
+                else if (crossThreadCollision)
+                {
+                    var other = items.First(item => !string.Equals(item.Thread, primary.Thread, StringComparison.Ordinal));
+                    conflicts.Add(new UsageConflict(primary.Id, primary.Thread, "cross-thread-id-collision",
+                        primary.Input, primary.Cached, primary.Output, other.Input, other.Cached, other.Output));
+                }
+                var enriched = EnrichWithGateway(primary with { HasSourceConflict = true }, conflicts);
+                merged.Add(enriched);
+            }
+        }
+
+        AssignSegments(merged);
+        Conflicts = conflicts;
+        Entries = merged.OrderBy(e => e.At).ToArray();
+    }
+
+    private UsageEntry EnrichWithGateway(UsageEntry entry, List<UsageConflict> conflicts)
+    {
+        if (entry.Legacy || _gatewayLookup is null || string.IsNullOrWhiteSpace(entry.Id))
+        {
+            return entry;
+        }
+
+        if (_gatewayLookup.TryGet(entry.Id, out var gw))
+        {
+            var route = gw.EffectiveRoute;
+            var served = gw.EffectiveServedModel;
+            var gwInput = gw.FullInputTokens;
+            var gwCached = gw.CacheUnknown ? null : gw.CacheReadTokens;
+            var gwOutput = gw.OutputTokens;
+
+            var divergent = (gwInput is long gi && gi != entry.Input)
+                || (gwOutput is long go && go != entry.Output)
+                || (!gw.CacheUnknown && entry.CacheKnown && gwCached is long gc && gc != entry.Cached);
+
+            if (divergent)
+            {
+                conflicts.Add(new UsageConflict(entry.Id, entry.Thread, "codex-gateway-count-divergence",
+                    entry.Input, entry.Cached, entry.Output, gwInput, gwCached, gwOutput));
+            }
+
+            return entry with
+            {
+                Route = route ?? entry.Route,
+                ServedModel = served ?? entry.ServedModel,
+                UsageSource = "codex+gateway",
+                HasSourceConflict = entry.HasSourceConflict || divergent,
+                GatewayInput = divergent ? gwInput : entry.GatewayInput,
+                GatewayCached = divergent ? gwCached : entry.GatewayCached,
+                GatewayOutput = divergent ? gwOutput : entry.GatewayOutput
+            };
+        }
+
+        if (_gatewayLookup.TryGetInspect(entry.Id, out var inspected) && inspected.IsAmbiguous)
+        {
+            conflicts.Add(new UsageConflict(entry.Id, entry.Thread, "gateway-ambiguous-response-id",
+                entry.Input, entry.Cached, entry.Output, inspected.FullInputTokens, inspected.CacheReadTokens, inspected.OutputTokens));
+            return entry with { HasSourceConflict = true };
+        }
+
+        return entry;
+    }
+
+    private static bool CountsEqual(UsageEntry left, UsageEntry right) =>
+        left.Input == right.Input
+        && left.Cached == right.Cached
+        && left.CacheKnown == right.CacheKnown
+        && left.CacheWrite == right.CacheWrite
+        && left.Output == right.Output
+        && left.Reasoning == right.Reasoning;
+
+    private static void AssignSegments(List<UsageEntry> entries)
+    {
+        var indicesByThread = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var thread = entries[i].Thread;
+            if (!indicesByThread.TryGetValue(thread, out var list))
+            {
+                list = new List<int>();
+                indicesByThread[thread] = list;
+            }
+            list.Add(i);
+        }
+
+        foreach (var list in indicesByThread.Values)
+        {
+            list.Sort((a, b) => entries[a].At.CompareTo(entries[b].At));
+            var segIndex = 0;
+            string? segModel = null;
+            string? segRoute = null;
+            foreach (var idx in list)
+            {
+                var e = entries[idx];
+                var effectiveModel = e.DisplayModel;
+                var effectiveRoute = e.Route;
+                if (segIndex == 0)
+                {
+                    segIndex = 1;
+                    segModel = effectiveModel;
+                    segRoute = effectiveRoute;
+                }
+                else
+                {
+                    var modelChanged = !string.Equals(segModel, effectiveModel, StringComparison.OrdinalIgnoreCase);
+                    var routeChanged = !string.IsNullOrWhiteSpace(segRoute)
+                        && !string.IsNullOrWhiteSpace(effectiveRoute)
+                        && !string.Equals(segRoute, effectiveRoute, StringComparison.OrdinalIgnoreCase);
+                    if (modelChanged || routeChanged)
+                    {
+                        segIndex++;
+                        segModel = effectiveModel;
+                        segRoute = effectiveRoute;
+                    }
+                    else if (string.IsNullOrWhiteSpace(segRoute) && !string.IsNullOrWhiteSpace(effectiveRoute))
+                    {
+                        segRoute = effectiveRoute;
+                    }
+                }
+                entries[idx] = e with { SegmentIndex = segIndex };
+            }
+        }
     }
 
     private sealed class UsageFile
@@ -119,12 +313,18 @@ public sealed class UsageLedger
         private Decoder _decoder = Encoding.UTF8.GetDecoder();
         private string _thread = "", _model = "unknown";
         private string? _turn;
+        private readonly Dictionary<string, string> _turnModels = new(StringComparer.Ordinal);
+        private bool _hasUnboundTurnContext;
         private long _priorInput, _priorCached, _priorOutput, _priorReasoning;
+        private bool _priorCacheKnown = true;
         private string? _priorFingerprint;
+        private long _modernCoveredInput, _modernCoveredOutput;
+        private string? _lastModernUsageFingerprint;
         public bool Modern { get; private set; }
         public int Errors { get; private set; }
         public List<UsageEntry> Records { get; } = new();
         public List<UsageEntry> Legacy { get; } = new();
+        public List<UsageEntry> AllEntries { get; } = new();
         public UsageFile(string path) { _path = path; }
         public void Read()
         {
@@ -132,9 +332,11 @@ public sealed class UsageLedger
             if (f.Length < _offset)
             {
                 _offset = _lineNumber = 0; _pending.Clear(); _decoder = Encoding.UTF8.GetDecoder();
-                Records.Clear(); Legacy.Clear(); Modern = false; Errors = 0;
-                _thread = ""; _model = "unknown"; _turn = null; _priorFingerprint = null;
+                Records.Clear(); Legacy.Clear(); AllEntries.Clear(); Modern = false; Errors = 0;
+                _thread = ""; _model = "unknown"; _turn = null; _turnModels.Clear(); _hasUnboundTurnContext = false;
+                _priorFingerprint = null; _lastModernUsageFingerprint = null;
                 _priorInput = _priorCached = _priorOutput = _priorReasoning = 0;
+                _priorCacheKnown = true; _modernCoveredInput = _modernCoveredOutput = 0;
             }
             f.Position = _offset;
             var bytes = new byte[64 * 1024]; var chars = new char[Encoding.UTF8.GetMaxCharCount(bytes.Length)];
@@ -170,38 +372,264 @@ public sealed class UsageLedger
                 if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("payload", out var p)
                     || p.ValueKind != JsonValueKind.Object) return;
                 string? S(JsonElement e, string k) => ResponseSpeedAnalyzer.Text(e, k);
-                long N(JsonElement e, string k) => ResponseSpeedAnalyzer.Number(e, k);
                 var type = S(r, "type");
                 if (type == "session_meta") { _thread = S(p, "id") ?? _thread; return; }
-                if (type == "turn_context") { _model = S(p, "model") ?? "unknown"; _turn = S(p, "turn_id") ?? _turn; return; }
+                if (type == "turn_context")
+                {
+                    var ctxModel = S(p, "model");
+                    var ctxTurn = S(p, "turn_id");
+                    if (!string.IsNullOrWhiteSpace(ctxModel)) _model = ctxModel;
+                    else _model = "unknown";
+                    if (!string.IsNullOrWhiteSpace(ctxTurn))
+                    {
+                        _turn = ctxTurn;
+                        _turnModels[ctxTurn] = _model;
+                        _hasUnboundTurnContext = false;
+                    }
+                    else
+                    {
+                        _hasUnboundTurnContext = true;
+                    }
+                    return;
+                }
                 if (type == "event_msg" && S(p, "type") == "task_started") { _turn = S(p, "turn_id"); return; }
                 if (!DateTimeOffset.TryParse(S(r, "timestamp"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at)) { Errors++; return; }
                 if (type == "token_usage_record" && p.TryGetProperty("usage", out var u))
                 {
-                    Modern = true;
                     var id = S(p, "response_id");
                     if (string.IsNullOrEmpty(id)) { Errors++; return; }
-                    var input = N(u, "input_tokens"); var cached = N(u, "cached_input_tokens"); var output = N(u, "output_tokens");
-                    if (input < 0 || cached < 0 || cached > input || output < 0) { Errors++; return; }
-                    Records.Add(new(id, S(p, "thread_id") ?? _thread, S(p, "turn_id") ?? _turn, at,
-                        S(p, "model") ?? _model, input, cached, N(u, "cache_write_input_tokens"), output, N(u, "reasoning_output_tokens")));
+                    if (!TryParseUsageObject(u, out var parsed)) { Errors++; return; }
+                    Modern = true;
+                    var turnId = S(p, "turn_id") ?? _turn;
+                    var resolvedModel = ResolveModelForTurn(S(p, "model"), turnId);
+                    var entry = new UsageEntry(
+                        id,
+                        S(p, "thread_id") ?? _thread,
+                        turnId,
+                        at,
+                        resolvedModel,
+                        parsed.Input,
+                        parsed.Cached,
+                        parsed.CacheWrite,
+                        parsed.Output,
+                        parsed.Reasoning,
+                        Legacy: false,
+                        CacheKnown: parsed.CacheKnown,
+                        UsageSource: "codex-record");
+                    Records.Add(entry);
+                    AllEntries.Add(entry);
+                    _lastModernUsageFingerprint = UsageFingerprint(parsed.Input, parsed.Cached, parsed.Output);
+
+                    if (p.TryGetProperty("thread_token_usage", out var threadTotal)
+                        && threadTotal.ValueKind == JsonValueKind.Object
+                        && TryParseUsageObject(threadTotal, out var modernCumulative))
+                    {
+                        _priorInput = modernCumulative.Input;
+                        _priorCached = modernCumulative.Cached;
+                        _priorOutput = modernCumulative.Output;
+                        _priorReasoning = modernCumulative.Reasoning;
+                        _priorCacheKnown = modernCumulative.CacheKnown;
+                        _modernCoveredInput = Math.Max(_modernCoveredInput, modernCumulative.Input);
+                        _modernCoveredOutput = Math.Max(_modernCoveredOutput, modernCumulative.Output);
+                        _priorFingerprint = threadTotal.GetRawText();
+                    }
+                    else
+                    {
+                        _priorInput += parsed.Input;
+                        if (parsed.CacheKnown) _priorCached += parsed.Cached;
+                        else _priorCacheKnown = false;
+                        _priorOutput += parsed.Output;
+                        _priorReasoning += parsed.Reasoning;
+                        _modernCoveredInput = Math.Max(_modernCoveredInput, _priorInput);
+                        _modernCoveredOutput = Math.Max(_modernCoveredOutput, _priorOutput);
+                    }
                 }
-                else if (!Modern && type == "event_msg" && S(p, "type") == "token_count" &&
+                else if (type == "event_msg" && S(p, "type") == "token_count" &&
                     p.TryGetProperty("info", out var info) && info.ValueKind == JsonValueKind.Object &&
                     info.TryGetProperty("total_token_usage", out var total) && total.ValueKind == JsonValueKind.Object)
                 {
                     var fingerprint = total.GetRawText(); if (fingerprint == _priorFingerprint) return; _priorFingerprint = fingerprint;
-                    var input = N(total, "input_tokens"); var cached = N(total, "cached_input_tokens");
-                    var output = N(total, "output_tokens"); var reasoning = N(total, "reasoning_output_tokens");
+                    if (!TryParseUsageObject(total, out var parsedTotal)) { Errors++; return; }
+
+                    // If a modern record already covered this exact or higher cumulative level,
+                    // this token_count is a redundant mirror rather than an independent request.
+                    if (Modern && parsedTotal.Input <= _modernCoveredInput && parsedTotal.Output <= _modernCoveredOutput)
+                    {
+                        return;
+                    }
+
+                    ParsedUsage? parsedLast = null;
+                    if (info.TryGetProperty("last_token_usage", out var lastEl)
+                        && lastEl.ValueKind == JsonValueKind.Object
+                        && TryParseUsageObject(lastEl, out var lastParsed))
+                    {
+                        parsedLast = lastParsed;
+                        if (Modern && _lastModernUsageFingerprint is not null
+                            && UsageFingerprint(lastParsed.Input, lastParsed.Cached, lastParsed.Output) == _lastModernUsageFingerprint
+                            && parsedTotal.Input == _priorInput && parsedTotal.Output == _priorOutput)
+                        {
+                            return;
+                        }
+                    }
+
                     // Cumulative regressions after compaction reset the baseline; never charge the old prefix again.
-                    if (input >= _priorInput && output >= _priorOutput)
-                        Legacy.Add(new("legacy:" + _thread + ":" + fingerprint, _thread, _turn, at, "unknown",
-                            input - _priorInput, Math.Clamp(cached - _priorCached, 0, input - _priorInput), 0,
-                            output - _priorOutput, Math.Max(0, reasoning - _priorReasoning), true));
-                    _priorInput = input; _priorCached = cached; _priorOutput = output; _priorReasoning = reasoning;
+                    if (parsedTotal.Input >= _priorInput && parsedTotal.Output >= _priorOutput)
+                    {
+                        var deltaInput = parsedTotal.Input - _priorInput;
+                        var deltaOutput = parsedTotal.Output - _priorOutput;
+                        if (deltaInput > 0 || deltaOutput > 0)
+                        {
+                            var cacheKnown = parsedTotal.CacheKnown && _priorCacheKnown;
+                            var deltaCached = cacheKnown
+                                ? Math.Clamp(parsedTotal.Cached - _priorCached, 0, deltaInput)
+                                : 0;
+                            var deltaReasoning = Math.Max(0, parsedTotal.Reasoning - _priorReasoning);
+                            var requestCountKnown = parsedLast is { } lp
+                                && lp.Input == deltaInput
+                                && lp.Output == deltaOutput;
+                            var legacyModel = ResolveModelForTurn(null, _turn);
+                            var legacyEntry = new UsageEntry(
+                                "legacy:" + _thread + ":" + fingerprint,
+                                _thread,
+                                _turn,
+                                at,
+                                legacyModel,
+                                deltaInput,
+                                deltaCached,
+                                0,
+                                deltaOutput,
+                                deltaReasoning,
+                                Legacy: true,
+                                CacheKnown: cacheKnown,
+                                UsageSource: "codex-legacy",
+                                RequestCountKnown: requestCountKnown);
+                            Legacy.Add(legacyEntry);
+                            AllEntries.Add(legacyEntry);
+                        }
+                    }
+                    _priorInput = parsedTotal.Input;
+                    _priorCached = parsedTotal.Cached;
+                    _priorOutput = parsedTotal.Output;
+                    _priorReasoning = parsedTotal.Reasoning;
+                    _priorCacheKnown = parsedTotal.CacheKnown;
                 }
             }
             catch (Exception e) when (e is JsonException or InvalidOperationException) { Errors++; }
+        }
+
+        private string ResolveModelForTurn(string? explicitModel, string? turnId)
+        {
+            if (!string.IsNullOrWhiteSpace(explicitModel)) return explicitModel;
+            if (!string.IsNullOrWhiteSpace(turnId))
+            {
+                if (_turnModels.TryGetValue(turnId, out var mapped)) return mapped;
+                // Do not borrow a different turn's model when turn_id is known to belong to another turn.
+                if (!_hasUnboundTurnContext && _turnModels.Count > 0 && !string.Equals(turnId, _turn, StringComparison.Ordinal))
+                {
+                    return "unknown";
+                }
+            }
+            return _model;
+        }
+
+        private static string UsageFingerprint(long input, long cached, long output) =>
+            string.Create(CultureInfo.InvariantCulture, $"{input}:{cached}:{output}");
+
+        internal readonly record struct ParsedUsage(long Input, long Cached, bool CacheKnown, long CacheWrite, long Output, long Reasoning);
+
+        internal static bool TryParseUsageObject(JsonElement usage, out ParsedUsage parsed)
+        {
+            parsed = default;
+            if (usage.ValueKind != JsonValueKind.Object) return false;
+
+            // Support standard Codex/Responses fields and OpenAI Chat Completions fallback names.
+            var hasInput = TryReadOptionalStrict(usage, "input_tokens", out var inputOpt)
+                && (inputOpt is not null || (TryReadOptionalStrict(usage, "prompt_tokens", out inputOpt)));
+            var hasOutput = TryReadOptionalStrict(usage, "output_tokens", out var outputOpt)
+                && (outputOpt is not null || (TryReadOptionalStrict(usage, "completion_tokens", out outputOpt)));
+            if (!hasInput || !hasOutput || inputOpt is not long rawInput || outputOpt is not long output)
+            {
+                return false;
+            }
+
+            var cacheUnknownFlag = usage.TryGetProperty("cache_unknown", out var unkEl) && unkEl.ValueKind == JsonValueKind.True;
+            if (!TryReadOptionalStrict(usage, "cached_input_tokens", out var cachedOpt)) return false;
+            if (!TryReadOptionalStrict(usage, "cache_write_input_tokens", out var cacheWriteOpt)) return false;
+            if (!TryReadOptionalStrict(usage, "reasoning_output_tokens", out var reasoningOpt)) return false;
+
+            var anthropicStyle = false;
+            long? anthropicRead = null;
+            long? anthropicCreate = null;
+            if (cachedOpt is null)
+            {
+                if (TryReadNestedOptionalStrict(usage, "input_tokens_details", "cached_tokens", out var nestedCached)
+                    && nestedCached is long nc)
+                {
+                    cachedOpt = nc;
+                }
+                else if (TryReadNestedOptionalStrict(usage, "prompt_tokens_details", "cached_tokens", out var promptCached)
+                    && promptCached is long pc)
+                {
+                    cachedOpt = pc;
+                }
+                else if (usage.TryGetProperty("cache_read_input_tokens", out _) || usage.TryGetProperty("cache_creation_input_tokens", out _))
+                {
+                    if (!TryReadOptionalStrict(usage, "cache_read_input_tokens", out anthropicRead)) return false;
+                    if (!TryReadOptionalStrict(usage, "cache_creation_input_tokens", out anthropicCreate)) return false;
+                    anthropicStyle = true;
+                }
+            }
+
+            long fullInput;
+            long cached;
+            bool cacheKnown;
+            long cacheWrite;
+            if (anthropicStyle)
+            {
+                var read = anthropicRead ?? 0;
+                var create = anthropicCreate ?? 0;
+                fullInput = rawInput + read + create;
+                cached = read;
+                cacheWrite = create;
+                cacheKnown = !cacheUnknownFlag && anthropicRead is not null;
+            }
+            else
+            {
+                fullInput = rawInput;
+                cacheWrite = cacheWriteOpt ?? 0;
+                cacheKnown = !cacheUnknownFlag && cachedOpt is not null;
+                cached = cacheKnown ? cachedOpt!.Value : 0;
+                if (cacheKnown && cached > fullInput) return false;
+            }
+
+            var reasoning = reasoningOpt ?? 0;
+            parsed = new ParsedUsage(fullInput, cached, cacheKnown, cacheWrite, output, reasoning);
+            return true;
+        }
+
+        private static bool TryReadOptionalStrict(JsonElement obj, string property, out long? value)
+        {
+            value = null;
+            if (!obj.TryGetProperty(property, out var el) || el.ValueKind == JsonValueKind.Null)
+            {
+                return true;
+            }
+            if (el.ValueKind == JsonValueKind.Number && el.TryGetInt64(out var parsed) && parsed >= 0)
+            {
+                value = parsed;
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TryReadNestedOptionalStrict(JsonElement obj, string parent, string child, out long? value)
+        {
+            value = null;
+            if (!obj.TryGetProperty(parent, out var p) || p.ValueKind != JsonValueKind.Object)
+            {
+                return true;
+            }
+            return TryReadOptionalStrict(p, child, out value);
         }
     }
 }

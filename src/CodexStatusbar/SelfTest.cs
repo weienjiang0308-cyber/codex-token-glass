@@ -88,6 +88,22 @@ internal static class SelfTest
         }
         Check("100 percent clarity uses the same zero tint for every secondary control",GlassAppearance.ControlTint(100,false)==0,true);
         Check("hover cannot introduce a different tint at the clear endpoint",GlassAppearance.ControlTint(100,true)==0,true);
+        Section("settings dialog construction and iOS 18 theme switching");
+        foreach (var themeKind in new[] { OverlayThemeKind.Light, OverlayThemeKind.Dark })
+        {
+            using var dialog = new SettingsForm(() => OverlayThemePalette.For(themeKind), () => 500_000);
+            dialog.CreateControl();
+            dialog.FlushPendingInput();
+            var buttonCount = dialog.Controls.OfType<GlassButton>().Count();
+            Check($"SettingsForm ({themeKind}) constructs all buttons without WinForms property exceptions", buttonCount >= 6, true);
+            using var paintBuffer = new Bitmap(Math.Max(1, dialog.ClientSize.Width), Math.Max(1, dialog.ClientSize.Height));
+            dialog.DrawToBitmap(paintBuffer, new Rectangle(Point.Empty, dialog.ClientSize));
+            Check($"SettingsForm ({themeKind}) renders into bitmap cleanly", paintBuffer.Width > 0 && paintBuffer.Height > 0, true);
+            var sheetHeight = (int)Math.Round(OverlayLayoutCalculator.SheetHeightDip * dialog.DeviceDpi / 96d);
+            var sheetWidth = (int)Math.Round(OverlayLayoutCalculator.ExpandedWidthDip * dialog.DeviceDpi / 96d);
+            Check($"SettingsForm ({themeKind}) uses the same {OverlayLayoutCalculator.ExpandedWidthDip} x {OverlayLayoutCalculator.SheetHeightDip} sheet as the first-level panel",
+                dialog.ClientSize == new Size(sheetWidth, sheetHeight), true);
+        }
         Section("native dialog alpha fringe");
         using(var source=new Bitmap(120,120,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
         {
@@ -902,6 +918,15 @@ internal static class SelfTest
         using var chineseFont = CodexUi.FontForText("用量详情", 11);
         Check("Chinese labels use a sans font instead of serif fallback", new[] { "PingFang", "苹方", "Noto Sans SC", "YaHei" }
             .Any(name => chineseFont.FontFamily.Name.Contains(name, StringComparison.OrdinalIgnoreCase)), true);
+        foreach (var dense in new[] { false, true })
+        {
+            var cjkFamily = AppleText.CjkFamilyName(dense);
+            Check($"CJK glyphs use a Chinese sans face at {(dense ? "high" : "low")} density, never Japanese Yu Gothic",
+                cjkFamily.Length == 0 || new[] { "YaHei", "Noto Sans SC" }.Any(name => cjkFamily.Contains(name, StringComparison.OrdinalIgnoreCase)), true);
+        }
+        Check("low-density CJK prefers hinted YaHei when its font file is present",
+            !File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "msyh.ttc"))
+            || AppleText.CjkFamilyName(false).Contains("YaHei", StringComparison.OrdinalIgnoreCase), true);
         Check("focused composer remains a valid docking reference",
             ComposerDockTracker.IsComposerEditorClass("ProseMirror ProseMirror-focused"), true);
         Check("unrelated class is not a composer",
@@ -949,6 +974,20 @@ internal static class SelfTest
         var totalOnly=snapshot with{InputTokens=0,OutputTokens=0,CachedInputTokens=0,TotalTokens=123456,BaselineSource="state-db"};
         Check("database-only recovery retains the known total instead of showing zero",OverlayPresentationBuilder.BuildCapsuleText(totalOnly).Contains("Tokens "+MetricFormat.CompactTokens(123456)),true);
         Check("database-only recovery does not invent a cache rate",OverlayPresentationBuilder.BuildCapsuleText(totalOnly).Contains("Cache hit"),false);
+        var dbState = new RolloutStreamState();
+        dbState.ApplyStateDatabaseBaseline(123456);
+        Check("ApplyStateDatabaseBaseline keeps total without inventing input or 0% cache",
+            dbState.TotalTokens == 123456 && dbState.InputTokens == 0 && dbState.CacheKnownInputTokens == 0, true);
+        var unknownCacheSnapshot = snapshot with { InputTokens = 5000, CachedInputTokens = 0, CacheKnownInputTokens = 0, OutputTokens = 200, TotalTokens = 5200 };
+        Check("unknown cache input is never shown as 0% on the strip",
+            OverlayPresentationBuilder.BuildCapsuleText(unknownCacheSnapshot).Contains("Cache hit"), false);
+        var unknownCachePres = OverlayPresentationBuilder.Create(unknownCacheSnapshot, DisplayField.Tps, DisplayField.Total, DisplayField.Input | DisplayField.CacheHit | DisplayField.CacheHitRate | DisplayField.CacheMiss);
+        Check("unknown cache rate shows dash in panel details",
+            unknownCachePres.ExpandedRows.Single(x => x.Field == DisplayField.CacheHitRate).Value, "—");
+        Check("unknown cached input shows dash instead of 0 in panel details",
+            unknownCachePres.ExpandedRows.Single(x => x.Field == DisplayField.CacheHit).Value, "—");
+        Check("unknown uncached input shows dash instead of full input in panel details",
+            unknownCachePres.ExpandedRows.Single(x => x.Field == DisplayField.CacheMiss).Value, "—");
         Check("input details keep exact integers", presentation.ExpandedRows.Single(x => x.Field == DisplayField.Input).Value, "1,234,500");
         Check("uncached input excludes cached input", presentation.ExpandedRows.Single(x => x.Field == DisplayField.CacheMiss).Value, "234,500");
         Check("task duration appears in details", presentation.ExpandedRows.Single(x => x.Field == DisplayField.TurnDuration).Value, CodexUi.T("1 分 5 秒", "1m 5s"));
@@ -1058,10 +1097,17 @@ internal static class SelfTest
             var settings = form.SettingsButtonBounds;
             Check($"{dpi} DPI: settings uses a square icon-only touch target",settings.Width,settings.Height);
             var outerRadius = OverlayRenderMetrics.Create(dpi, 100).PanelRadius;
-            Check($"{dpi} DPI: top corner and button share a vertical center",
+            Check($"{dpi} DPI: panel corner radius is {TokenStripForm.PanelCornerRadiusDip} DIP", Math.Abs(outerRadius - TokenStripForm.PanelCornerRadiusDip * factor) <= 1, true);
+            Check($"{dpi} DPI: settings glyph is concentric with the panel's top-right corner (vertical)",
                 Math.Abs((settings.Top + settings.Height / 2d) - outerRadius) <= 1, true);
-            Check($"{dpi} DPI: right corner and button share a horizontal center",
-                Math.Abs((settings.Right - settings.Height / 2d) - (panel.Right - outerRadius)) <= 1, true);
+            Check($"{dpi} DPI: settings glyph is concentric with the panel's top-right corner (horizontal)",
+                Math.Abs((settings.Left + settings.Width / 2d) - (panel.Right - outerRadius)) <= 1, true);
+            Check($"{dpi} DPI: its centre line is the navigation row shared with the pushed pages",
+                OverlayLayoutCalculator.NavCenterYDip, TokenStripForm.PanelCornerRadiusDip);
+            Check($"{dpi} DPI: the tiles start as far below the settings glyph as the glyph is from the top edge",
+                TokenStripForm.TilesTopDip - (TokenStripForm.PanelCornerRadiusDip + TokenStripForm.SettingsGlyphDip / 2),
+                TokenStripForm.PanelCornerRadiusDip - TokenStripForm.SettingsGlyphDip / 2);
+            Check($"{dpi} DPI: settings touch target is at least 44 DIP", settings.Width >= (int)Math.Round(44 * factor), true);
             Check($"{dpi} DPI: hit region does not include square corner pixels", form.InputContainsClientPoint(new Point(1,1)), false);
             Check($"{dpi} DPI: native region cannot hard-clip curved antialiased edges", form.Region!.IsVisible(1,1), true);
             using var image = form.RenderSurfaceBitmap(new Size(D(420), D(590)), dpi);
@@ -1093,7 +1139,7 @@ internal static class SelfTest
             using var picture=new Bitmap(side,side);close.DrawToBitmap(picture,new Rectangle(0,0,side,side));
             double sx=0,sy=0;var count=0;
             for(var y=side/2-8;y<=side/2+8;y++)for(var x=side/2-8;x<=side/2+8;x++)
-                if(picture.GetPixel(x,y).GetBrightness()<.35){sx+=x;sy+=y;count++;}
+                if(picture.GetPixel(x,y).GetBrightness()<.6){sx+=x;sy+=y;count++;}
             Check($"{side}px close glyph has a centered optical centroid",count>0&&Math.Abs(sx/count-side/2d)<.6&&Math.Abs(sy/count-side/2d)<.6,true);
         }
         var style = CodexUi.Parse(["[desktop]", "localeOverride = 'en-US'", "[desktop.appearanceLightChromeTheme]",
